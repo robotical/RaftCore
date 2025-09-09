@@ -52,6 +52,11 @@ bool BusAddrStatus::handleResponding(bool isResponding, bool &flagSpuriousRecord
                 else
                     isChange = !isChange;
                 isOnline = false;
+                // set this so that next time around the address record will be marked as spurious and deleted
+                // can't delete it first time around as currently this caused the status update to not properly propagate
+                // to the main busElemStatusCB call
+                // TODO - do this more properly and obviously
+                wasOnceOnline = false;
                 return true;
             }
         }
