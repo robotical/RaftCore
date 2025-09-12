@@ -157,7 +157,6 @@ public:
     /// @return true if applied
     virtual bool setDevicePollInterval(BusElemAddrType address, uint32_t pollIntervalUs)
     {
-        (void)address; (void)pollIntervalUs;
         return false;
     }
 
