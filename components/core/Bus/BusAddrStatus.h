@@ -33,6 +33,7 @@ public:
     bool wasOnceOnline : 1 = false;
     bool slotResolved : 1 = false;
     bool isNewlyIdentified : 1 = false;
+    bool flagForDeletion : 1 = false;
 
     // Access barring
     uint32_t barStartMs = 0;

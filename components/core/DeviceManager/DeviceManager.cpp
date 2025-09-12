@@ -229,6 +229,16 @@ void DeviceManager::busElemStatusCB(RaftBus& bus, const std::vector<BusElemAddrA
             {
                 registerForDeviceDataChangeCBs(pDevice->getDeviceName().c_str());
             }
+
+            if (!el.isChangeToOnline){
+                LOG_I(MODULE_PREFIX, "Device is offline. Deleting - %s", deviceId.c_str());
+                if (xSemaphoreTake(_accessMutex, pdMS_TO_TICKS(5)) == pdTRUE)
+                {
+                    // Delete from the list. It will be re-identified if reconnected. If continuity is required it should be handled at the frontend
+                    _deviceList.remove(pDevice);
+                    xSemaphoreGive(_accessMutex);
+                }
+            }
         }
         
         // Debug
