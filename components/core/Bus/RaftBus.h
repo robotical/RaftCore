@@ -151,6 +151,16 @@ public:
     }
 
     /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    /// @brief Set device polling interval (us) for an address, if supported by the bus
+    /// @param address Composite bus element address
+    /// @param pollIntervalUs Polling interval in microseconds
+    /// @return true if applied
+    virtual bool setDevicePollInterval(BusElemAddrType address, uint32_t pollIntervalUs)
+    {
+        return false;
+    }
+
+    /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     /// @brief Check if a bus element is responding
     /// @param address - address of element to check
     /// @param pIsValid - (out) set to true if address is valid
