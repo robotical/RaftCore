@@ -32,6 +32,7 @@ bool BusAddrStatus::handleResponding(bool isResponding, bool &flagSpuriousRecord
                 count = 0;
                 isOnline = true;
                 wasOnceOnline = true;
+                flagForDeletion = false;
                 return true;
             }
         }
@@ -39,7 +40,7 @@ bool BusAddrStatus::handleResponding(bool isResponding, bool &flagSpuriousRecord
     else
     {
         // Not responding - check for change to offline
-        if (isOnline || !wasOnceOnline)
+        if (isOnline || !wasOnceOnline || flagForDeletion)
         {
             // Count down to offline/spurious threshold
             count = (count < -failMax) ? count : count - 1;
@@ -47,16 +48,16 @@ bool BusAddrStatus::handleResponding(bool isResponding, bool &flagSpuriousRecord
             {
                 // Now offline/spurious
                 count = 0;
-                if (!wasOnceOnline)
+                if (!wasOnceOnline || flagForDeletion)
                     flagSpuriousRecord = true;
                 else
                     isChange = !isChange;
                 isOnline = false;
-                // set this so that next time around the address record will be marked as spurious and deleted
-                // can't delete it first time around as currently this caused the status update to not properly propagate
-                // to the main busElemStatusCB call
-                // TODO - do this more properly and obviously
-                wasOnceOnline = false;
+                // flag for deletion next time around the loop
+                // we can't do it at the same time we make the change to offline as we need the busStatusMgr in RaftI2C to log the change
+                // and call the busElemStatusCB to clean up the device first, before the we delete the record in the busStatusManager's address list
+                // TODO: this behaviour should be refactored to be less convoluted / more robust
+                flagForDeletion = true;
                 return true;
             }
         }
