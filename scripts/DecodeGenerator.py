@@ -127,6 +127,10 @@ class DecodeGenerator:
         pystruct_type = attr_rec.get("t", "")
         if len(pystruct_type) == 0:
             return ""
+
+        # ignore array def if present
+        if pystruct_type.find('[') > 0:
+            pystruct_type = pystruct_type[0:pystruct_type.find('[')]
         
         # Get C type from pystruct map
         pystruct_rec = self.pystruct_map.get(pystruct_type, None)
@@ -161,8 +165,13 @@ class DecodeGenerator:
         # Get C type
         c_type = self.get_c_eqv_type(attr_rec, True, False)
 
+        array_def = ""
+        # get array def if present
+        if pystruct_type.find('[') > 0:
+            array_def = pystruct_type[pystruct_type.find('['):len(pystruct_type)]
+
         # C field
-        return c_type + " " + attr_name
+        return c_type + " " + attr_name + array_def
         
     def gen_struct_name(self, dev_info_json):
         # Get the device type record name
@@ -292,6 +301,15 @@ class DecodeGenerator:
             pystruct_type = el.get("t", "")
             if pystruct_type == "":
                 continue
+            # get array details if present
+            arraySize = 0
+            loopDef = ""
+            loopItem = ""
+            if pystruct_type.find('[') > 0:
+                arraySize = pystruct_type[(pystruct_type.find('[')+1):pystruct_type.find(']')]
+                pystruct_type = pystruct_type[0:pystruct_type.find('[')]
+                loopDef = f"for (int i=0; i<{arraySize}; i++)"
+                loopItem = "[i]"
             buf_elem_type = self.get_c_eqv_type(el, False, False)
             if buf_elem_type == "":
                 continue
@@ -300,7 +318,7 @@ class DecodeGenerator:
             intermediate_type = self.get_c_eqv_type(el, False, True)
 
             # Generate a block to stop C++ from complaining about reused variable names
-            extract_code.append(f"{line_prefix}    " + "{\n")
+            extract_code.append(f"{line_prefix}    {loopDef}" + "{\n")
 
             # Check if the "at" field is present which means absolute position in the buffer
             attr_pos = el.get("at", "")
@@ -380,22 +398,22 @@ class DecodeGenerator:
             if "s" in el and el["s"] != 0:
                 bitshift = el["s"]
                 if bitshift > 0:
-                    extract_code.append(f"{line_prefix}        __{attr_name} <<= {bitshift};\n")
+                    extract_code.append(f"{line_prefix}        __{attr_name} >>= {bitshift};\n")
                 elif bitshift < 0:
-                    extract_code.append(f"{line_prefix}        __{attr_name} >>= {-bitshift};\n")
+                    extract_code.append(f"{line_prefix}        __{attr_name} <<= {-bitshift};\n")
 
             # Generate code to store the value to the struct
-            extract_code.append(f"{line_prefix}        pOut->{attr_name} = __{attr_name};\n")
+            extract_code.append(f"{line_prefix}        pOut->{attr_name}{loopItem} = __{attr_name};\n")
             
             # Check for divisor
             if "d" in el and el["d"] != 0:
                 divisor = el["d"]
-                extract_code.append(f"{line_prefix}        pOut->{attr_name} /= {divisor};\n")
+                extract_code.append(f"{line_prefix}        pOut->{attr_name}{loopItem} /= {divisor};\n")
 
             # Check for addition
             if "a" in el and el["a"] != 0:
                 addition = el["a"]
-                extract_code.append(f"{line_prefix}        pOut->{attr_name} += {addition};\n")
+                extract_code.append(f"{line_prefix}        pOut->{attr_name}{loopItem} += {addition};\n")
             
             # End block to stop C++ from complaining about reused variables
             extract_code.append(f"{line_prefix}    " + "}\n")
