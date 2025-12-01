@@ -107,9 +107,11 @@ bool DeviceStatus::storePollResults(uint32_t nextReqIdx, uint64_t timeNowUs, con
 /// @param timestampResolutionUs timestamp resolution (us)
 void DeviceStatus::configureOfflineBuffer(uint32_t maxEntries, uint32_t payloadSize, uint32_t timestampBytes, uint32_t timestampResolutionUs)
 {
+    // Keep the current paused state so reconfiguration doesn't accidentally resume buffering
+    bool wasPaused = _offlineBufferPaused;
     offlineData.init(maxEntries, payloadSize, timestampBytes, timestampResolutionUs);
     _offlineSeq = 0;
-    _offlineBufferPaused = false;
+    _offlineBufferPaused = wasPaused;
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
