@@ -358,6 +358,21 @@ void SysManager::loop()
                 // Show stats
                 statsShow();
 
+                // One-time memory snapshot after the system has been up for a bit
+                if (!_memorySnapshotLogged)
+                {
+#ifdef ESP_PLATFORM
+                    uint32_t freePsram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+                    uint32_t largestPsram = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+                    uint32_t freeInternal = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+                    uint32_t largestInternal = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+                    LOG_I(MODULE_PREFIX, "mem snapshot freePsram %u largestPsram %u freeInternal %u largestInternal %u",
+                            (unsigned)freePsram, (unsigned)largestPsram,
+                            (unsigned)freeInternal, (unsigned)largestInternal);
+#endif
+                    _memorySnapshotLogged = true;
+                }
+
                 // Clear stats for start of next monitor period
                 _supervisorStats.clear();
             }

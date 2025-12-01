@@ -130,15 +130,18 @@ private:
 
     /// @brief Access to devices' data in JSON format
     /// @return JSON string
-    String getDevicesDataJSON() const;
+    String getDevicesDataJSON(uint32_t maxResponsesToReturn = 0, uint32_t* pRemaining = nullptr) const;
 
     /// @brief Access to devices' data in binary format
     /// @return Binary data vector
-    std::vector<uint8_t> getDevicesDataBinary() const;
+    std::vector<uint8_t> getDevicesDataBinary(uint32_t maxResponsesToReturn = 0, uint32_t* pRemaining = nullptr) const;
 
     /// @brief Get devices' status hash
     /// @param stateHash hash of the currently available data
     void getDevicesHash(std::vector<uint8_t>& stateHash) const;
+
+    /// @brief Pause/resume draining offline buffers due to link availability
+    void setOfflineDrainLinkPaused(bool paused);
 
     /// @brief API callback
     /// @param reqStr Request string
@@ -194,6 +197,8 @@ private:
 
     // Last report time
     uint32_t _debugLastReportTimeMs = 0;
+    uint32_t _maxPublishSamplesPerDevice = 0;
+    bool _offlineDrainLinkPaused = false;
 
     // Debug
     static constexpr const char* MODULE_PREFIX = "DevMan";

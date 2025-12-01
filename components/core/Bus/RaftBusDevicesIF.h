@@ -14,6 +14,10 @@
 #include "RaftArduino.h"
 #include "RaftDeviceConsts.h"
 #include "DevicePollingInfo.h"
+#include "OfflineDataStore.h"
+#include <set>
+#include <string>
+#include <map>
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 /// @brief Device decode state
@@ -62,13 +66,14 @@ public:
     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     /// @brief Get queued device data in JSON format
     /// @return JSON string
-    virtual String getQueuedDeviceDataJson() const = 0;
+    virtual String getQueuedDeviceDataJson(uint32_t maxResponsesToReturn = 0, uint32_t* pRemaining = nullptr) const = 0;
 
     /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     /// @brief Get queued device data in binary format
     /// @param connMode connection mode (inc bus number)
     /// @return Binary data vector
-    virtual std::vector<uint8_t> getQueuedDeviceDataBinary(uint32_t connMode) const = 0;
+    virtual std::vector<uint8_t> getQueuedDeviceDataBinary(uint32_t connMode, uint32_t maxResponsesToReturn = 0,
+                uint32_t* pRemaining = nullptr) const = 0;
 
     /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     /// @brief Get decoded poll responses
@@ -116,5 +121,87 @@ public:
         if (!includeBraces)
             return "";
         return "{}";
+    }
+
+    /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    /// @brief Get offline stats
+    /// @param address device address
+    virtual OfflineDataStats getOfflineStats(BusElemAddrType address) const
+    {
+        (void)address;
+        return OfflineDataStats();
+    }
+
+    // Optional offline control interfaces (default no-op)
+    virtual void setOfflineMaxPerPublishOverride(uint32_t maxPerPublish) {(void)maxPerPublish;}
+    virtual void setOfflineDrainSelection(const std::vector<BusElemAddrType>& addresses, const std::vector<std::string>& typeNames,
+                bool drainOnlySelected) {(void)addresses; (void)typeNames; (void)drainOnlySelected;}
+    virtual void setOfflineBufferPaused(const std::vector<BusElemAddrType>& addresses, bool paused) {(void)addresses; (void)paused;}
+    virtual void setOfflineDrainPaused(const std::vector<BusElemAddrType>& addresses, bool paused) {(void)addresses; (void)paused;}
+    virtual void setOfflineDrainLinkPaused(bool paused) {(void)paused;}
+    virtual void resetOfflineBuffers(const std::vector<BusElemAddrType>& addresses) {(void)addresses;}
+    virtual void getOfflineControlSnapshot(std::set<BusElemAddrType>& bufferPaused, std::set<BusElemAddrType>& drainPaused,
+                std::set<BusElemAddrType>& drainSelectedAddrs, std::set<std::string>& drainSelectedTypes,
+                bool& drainOnlySelected, uint32_t& maxPerPublishOverride,
+                bool& globalBufferPaused, bool& globalDrainPaused,
+                std::map<BusElemAddrType, uint32_t>& rateOverridesUs) const
+    {
+        bufferPaused.clear();
+        drainPaused.clear();
+        drainSelectedAddrs.clear();
+        drainSelectedTypes.clear();
+        drainOnlySelected = false;
+        maxPerPublishOverride = 0;
+        globalBufferPaused = false;
+        globalDrainPaused = false;
+        rateOverridesUs.clear();
+    }
+    virtual bool getDeviceTypeName(BusElemAddrType address, std::string& typeName) const
+    {
+        (void)address;
+        typeName.clear();
+        return false;
+    }
+    virtual String peekOfflineDataJson(const std::vector<BusElemAddrType>& addresses,
+                uint32_t startIdx, uint32_t maxResponsesToReturn, uint32_t maxBytes,
+                uint32_t& totalRemaining) const
+    {
+        (void)addresses;
+        (void)startIdx;
+        (void)maxResponsesToReturn;
+        (void)maxBytes;
+        totalRemaining = 0;
+        return "{}";
+    }
+    virtual bool applyOfflineRateOverride(const std::vector<BusElemAddrType>& addresses, uint32_t pollRateMs)
+    {
+        (void)addresses;
+        (void)pollRateMs;
+        return false;
+    }
+    virtual bool clearOfflineRateOverride(const std::vector<BusElemAddrType>& addresses)
+    {
+        (void)addresses;
+        return false;
+    }
+    virtual bool rebalanceOfflineBuffers(const std::vector<BusElemAddrType>& addresses)
+    {
+        (void)addresses;
+        return false;
+    }
+    struct EstAllocInfo
+    {
+        uint32_t allocBytes = 0;
+        uint32_t bytesPerEntry = 0;
+        uint32_t payloadSize = 0;
+        uint32_t metaSize = 0;
+    };
+
+    virtual bool estimateOfflineAllocations(const std::vector<BusElemAddrType>& addresses,
+                std::map<BusElemAddrType, EstAllocInfo>& allocBytesOut) const
+    {
+        (void)addresses;
+        allocBytesOut.clear();
+        return false;
     }
 };

@@ -76,11 +76,71 @@ bool DeviceStatus::storePollResults(uint32_t nextReqIdx, uint64_t timeNowUs, con
             partialPollResult.insert(partialPollResult.end(), pollResult.begin(), pollResult.end());
 
             // Add complete poll result to aggregator
-            return dataAggregator.put(timeNowUs, partialPollResult);
-        }
-
-        // Poll complete without partial poll - add result to aggregator
-        return dataAggregator.put(timeNowUs, pollResult);
+            bool aggOk = dataAggregator.put(timeNowUs, partialPollResult);
+            uint32_t seq = _offlineSeq++;
+            if (offlineData.isConfigured() && !_offlineBufferPaused)
+                offlineData.put(timeNowUs, seq, partialPollResult);
+            // LOG_I(MODULE_PREFIX, "storePollResults addrSeq %u size %u offline %s aggOk %d",
+            //             (unsigned)seq, (unsigned)partialPollResult.size(),
+            //             offlineData.isConfigured() ? (_offlineBufferPaused ? "paused" : "active") : "notcfg", aggOk);
+            return aggOk;
     }
+
+    // Poll complete without partial poll - add result to aggregator
+    bool aggOk = dataAggregator.put(timeNowUs, pollResult);
+    uint32_t seq = _offlineSeq++;
+    if (offlineData.isConfigured() && !_offlineBufferPaused)
+        offlineData.put(timeNowUs, seq, pollResult);
+    // LOG_I(MODULE_PREFIX, "storePollResults addrSeq %u size %u offline %s aggOk %d",
+    //             (unsigned)seq, (unsigned)pollResult.size(),
+    //             offlineData.isConfigured() ? (_offlineBufferPaused ? "paused" : "active") : "notcfg", aggOk);
+    return aggOk;
+}
     return true;
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/// @brief Configure offline buffer
+/// @param maxEntries maximum entries to retain
+/// @param payloadSize size of each poll result (bytes)
+/// @param timestampBytes number of bytes used for timestamp in poll result
+/// @param timestampResolutionUs timestamp resolution (us)
+void DeviceStatus::configureOfflineBuffer(uint32_t maxEntries, uint32_t payloadSize, uint32_t timestampBytes, uint32_t timestampResolutionUs)
+{
+    offlineData.init(maxEntries, payloadSize, timestampBytes, timestampResolutionUs);
+    _offlineSeq = 0;
+    _offlineBufferPaused = false;
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/// @brief Get offline responses
+/// @param devicePollResponseData (out) buffer containing concatenated responses
+/// @param responseSize (out) size of a single response
+/// @param maxResponsesToReturn max responses (0 for all)
+/// @param metas (out) metadata per response
+/// @return number of responses returned
+uint32_t DeviceStatus::getOfflineResponses(std::vector<uint8_t>& devicePollResponseData, uint32_t& responseSize,
+            uint32_t maxResponsesToReturn, std::vector<OfflineDataMeta>& metas)
+{
+    if (_offlineDrainPaused || !offlineData.isConfigured())
+        return 0;
+    return offlineData.get(devicePollResponseData, responseSize, maxResponsesToReturn, metas);
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/// @brief Peek at offline responses without consuming them
+uint32_t DeviceStatus::peekOfflineResponses(std::vector<uint8_t>& devicePollResponseData, uint32_t& responseSize,
+            uint32_t startIdx, uint32_t maxResponsesToReturn, uint32_t maxBytes,
+            std::vector<OfflineDataMeta>& metas)
+{
+    if (!offlineData.isConfigured())
+        return 0;
+    return offlineData.get(devicePollResponseData, responseSize, maxResponsesToReturn, metas, false, startIdx, maxBytes);
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/// @brief Get offline stats
+OfflineDataStats DeviceStatus::getOfflineStats() const
+{
+    return offlineData.getStats();
 }

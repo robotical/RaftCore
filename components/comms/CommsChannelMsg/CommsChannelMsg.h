@@ -50,6 +50,8 @@ public:
         _msgProtocol = MSG_PROTOCOL_NONE;
         _msgNum = COMMS_MSG_UNNUMBERED_NUM;
         _msgTypeCode = MSG_TYPE_REPORT;
+        _hasBacklogHint = false;
+        _backlogRemaining = 0;
     }
 
     CommsChannelMsg(uint32_t channelID, CommsMsgProtocol msgProtocol, uint32_t msgNum, CommsMsgTypeCode msgTypeCode)
@@ -58,12 +60,16 @@ public:
         _msgProtocol = msgProtocol;
         _msgNum = msgNum;
         _msgTypeCode = msgTypeCode;
+        _hasBacklogHint = false;
+        _backlogRemaining = 0;
     }
 
     void clear()
     {
         _cmdVector.clear();
         _cmdVector.shrink_to_fit();
+        _hasBacklogHint = false;
+        _backlogRemaining = 0;
     }
 
     void setFromBuffer(uint32_t channelID, CommsMsgProtocol msgProtocol, uint32_t msgNum, CommsMsgTypeCode msgTypeCode, const uint8_t* pBuf, uint32_t bufLen)
@@ -153,6 +159,18 @@ public:
         return _channelID;
     }
 
+    void setBacklogHint(bool hasBacklog, uint32_t remaining)
+    {
+        _hasBacklogHint = hasBacklog;
+        _backlogRemaining = remaining;
+    }
+
+    bool getBacklogHint(uint32_t& remaining) const
+    {
+        remaining = _backlogRemaining;
+        return _hasBacklogHint;
+    }
+
     static const char* getProtocolAsString(CommsMsgProtocol msgProtocol)
     {
         switch(msgProtocol)
@@ -233,6 +251,8 @@ private:
     CommsMsgProtocol _msgProtocol;
     uint32_t _msgNum;
     CommsMsgTypeCode _msgTypeCode;
+    bool _hasBacklogHint = false;
+    uint32_t _backlogRemaining = 0;
 #ifdef IMPLEMENT_NO_PSRAM_FOR_COMMS_CHANNEL_MSG
     std::vector<uint8_t> _cmdVector;
 #else

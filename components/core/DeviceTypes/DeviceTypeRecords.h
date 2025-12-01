@@ -11,6 +11,7 @@
 #include "DeviceTypeRecord.h"
 #include "DeviceTypeRecordDynamic.h"
 #include "DevicePollingInfo.h"
+#include "OfflineDataStore.h"
 #include "RaftThreading.h"
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -95,7 +96,9 @@ public:
     /// @param pDevTypeRec pointer to device type record
     /// @param devicePollResponseData device poll response data
     String deviceStatusToJson(BusElemAddrType addr, bool isOnline, const DeviceTypeRecord* pDevTypeRec, 
-            const std::vector<uint8_t>& devicePollResponseData) const;
+            const std::vector<uint8_t>& devicePollResponseData, bool isBacklog = false,
+            uint32_t remainingCount = 0, const OfflineDataMeta* pFirstMeta = nullptr,
+            const OfflineDataStats* pStats = nullptr) const;
 
     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
     /// @brief Get scan priority lists

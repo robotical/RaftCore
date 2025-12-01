@@ -302,6 +302,7 @@ private:
     uint32_t _monitorTimerMs = 0;
     bool _monitorTimerStarted = false;
     bool _monitorShownFirstTime = false;
+    bool _memorySnapshotLogged = false;
     static const uint32_t MONITOR_PERIOD_FIRST_SHOW_MS = 5000;
     bool _reportEnable = true;
     std::vector<String> _monitorReportList;

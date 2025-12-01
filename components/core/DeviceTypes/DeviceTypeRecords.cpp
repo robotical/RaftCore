@@ -551,7 +551,8 @@ void DeviceTypeRecords::getDetectionRecs(const DeviceTypeRecord* pDevTypeRec, st
 /// @param pDevTypeRec pointer to device type record
 /// @param devicePollResponseData device poll response data
 String DeviceTypeRecords::deviceStatusToJson(BusElemAddrType addr, bool isOnline, const DeviceTypeRecord* pDevTypeRec, 
-        const std::vector<uint8_t>& devicePollResponseData) const
+        const std::vector<uint8_t>& devicePollResponseData, bool isBacklog,
+        uint32_t remainingCount, const OfflineDataMeta* pFirstMeta, const OfflineDataStats* pStats) const
 {
     if (devicePollResponseData.size() == 0)
     {
@@ -564,7 +565,26 @@ String DeviceTypeRecords::deviceStatusToJson(BusElemAddrType addr, bool isOnline
     // Form a hex buffer
     String hexOut;
     Raft::getHexStrFromBytes(devicePollResponseData.data(), devicePollResponseData.size(), hexOut);
-    return "\"" + String(addr, 16) + "\":{\"x\":\"" + hexOut + "\",\"_o\":" + String(isOnline ? "1" : "0") + ",\"_t\":\"" + devTypeName + "\"}";
+    String jsonStr = "\"" + String(addr, 16) + "\":{\"x\":\"" + hexOut + "\",\"_o\":" + String(isOnline ? "1" : "0") + ",\"_t\":\"" + devTypeName + "\"";
+    if (isBacklog)
+    {
+        jsonStr += ",\"_buf\":1";
+        if (remainingCount > 0)
+            jsonStr += ",\"_remain\":" + String(remainingCount);
+        if (pStats)
+        {
+            jsonStr += ",\"_drops\":" + String(pStats->drops);
+            jsonStr += ",\"_depth\":" + String(pStats->depth);
+            jsonStr += ",\"_wraps\":" + String(pStats->tsWrapCount);
+        }
+        if (pFirstMeta)
+        {
+            jsonStr += ",\"_seq\":" + String((uint32_t)pFirstMeta->seq);
+            jsonStr += ",\"_tsb\":" + String((uint64_t)pFirstMeta->tsBaseMs);
+        }
+    }
+    jsonStr += "}";
+    return jsonStr;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////

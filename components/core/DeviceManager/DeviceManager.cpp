@@ -6,6 +6,11 @@
 
 #include <functional>
 #include <algorithm>
+#include <set>
+#include <map>
+#include <string>
+#include <cstdlib>
+#include <cctype>
 #include "DeviceManager.h"
 #include "DeviceTypeRecordDynamic.h"
 #include "DeviceTypeRecords.h"
@@ -15,6 +20,11 @@
 #include "SysManager.h"
 #include "RestAPIEndpointManager.h"
 #include "DemoDevice.h"
+#include "RaftJsonPrefixed.h"
+#include "OfflineDataStore.h"
+#ifdef ESP_PLATFORM
+#include "esp_heap_caps.h"
+#endif
 
 // Warnings
 #define WARN_ON_DEVICE_CLASS_NOT_FOUND
@@ -28,6 +38,7 @@
 // #define DEBUG_DEVICE_FACTORY
 // #define DEBUG_LIST_DEVICES
 // #define DEBUG_JSON_DEVICE_DATA
+using EstAllocInfo = RaftBusDevicesIF::EstAllocInfo;
 // #define DEBUG_BINARY_DEVICE_DATA
 // #define DEBUG_JSON_DEVICE_HASH
 // #define DEBUG_DEVMAN_API
@@ -62,6 +73,10 @@ void DeviceManager::setup()
             std::bind(&DeviceManager::busOperationStatusCB, this, std::placeholders::_1, std::placeholders::_2)
     );
 
+    // Offline publish defaults
+    RaftJsonPrefixed offlineCfg(modConfig(), "offlineBuffer");
+    _maxPublishSamplesPerDevice = offlineCfg.getLong("maxPerPublish", 32);
+
     // Setup device classes (these are the keys into the device factory)
     setupDevices("Devices", modConfig());
 }
@@ -74,9 +89,11 @@ void DeviceManager::postSetup()
     // Register JSON data source (message generator and state detector functions)
     getSysManager()->registerDataSource("Publish", "devjson", 
         [this](const char* messageName, CommsChannelMsg& msg) {
-            String statusStr = getDevicesDataJSON();
+            uint32_t remaining = 0;
+            String statusStr = getDevicesDataJSON(_maxPublishSamplesPerDevice, &remaining);
             msg.setFromBuffer((uint8_t*)statusStr.c_str(), statusStr.length());
-            return true;
+            msg.setBacklogHint(remaining > 0, remaining);
+            return statusStr.length() > 0;
         },
         [this](const char* messageName, std::vector<uint8_t>& stateHash) {
             return getDevicesHash(stateHash);
@@ -86,9 +103,11 @@ void DeviceManager::postSetup()
     // Register binary data source (new)
     getSysManager()->registerDataSource("Publish", "devbin", 
         [this](const char* messageName, CommsChannelMsg& msg) {
-            std::vector<uint8_t> binaryData = getDevicesDataBinary();
+            uint32_t remaining = 0;
+            std::vector<uint8_t> binaryData = getDevicesDataBinary(_maxPublishSamplesPerDevice, &remaining);
             msg.setFromBuffer(binaryData.data(), binaryData.size());
-            return true;
+            msg.setBacklogHint(remaining > 0, remaining);
+            return binaryData.size() > 0;
         },
         [this](const char* messageName, std::vector<uint8_t>& stateHash) {
             return getDevicesHash(stateHash);
@@ -450,10 +469,11 @@ RaftDevice* DeviceManager::setupDevice(const char* pDeviceClass, RaftJsonIF& dev
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 /// @brief Get devices' data as JSON
 /// @return JSON string
-String DeviceManager::getDevicesDataJSON() const
+String DeviceManager::getDevicesDataJSON(uint32_t maxResponsesToReturn, uint32_t* pRemaining) const
 {
     // JSON strings
     String jsonStrBus, jsonStrDev;
+    uint32_t remainingTotal = 0;
 
     // Check all buses for data
     for (RaftBus* pBus : raftBusSystem.getBusList())
@@ -464,7 +484,9 @@ String DeviceManager::getDevicesDataJSON() const
         RaftBusDevicesIF* pDevicesIF = pBus->getBusDevicesIF();
         if (!pDevicesIF)
             continue; 
-        String jsonRespStr = pDevicesIF->getQueuedDeviceDataJson();
+        uint32_t busRemaining = 0;
+        String jsonRespStr = pDevicesIF->getQueuedDeviceDataJson(maxResponsesToReturn, &busRemaining);
+        remainingTotal += busRemaining;
 
         // Check for empty string or empty JSON object
         if (jsonRespStr.length() > 2)
@@ -500,16 +522,20 @@ String DeviceManager::getDevicesDataJSON() const
         return "";
     }
 
+    if (pRemaining)
+        *pRemaining = remainingTotal;
+
     return "{" + (jsonStrBus.length() == 0 ? (jsonStrDev.length() == 0 ? "" : jsonStrDev) : (jsonStrDev.length() == 0 ? jsonStrBus : jsonStrBus + "," + jsonStrDev)) + "}";
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 /// @brief Get devices' data as binary
 /// @return Binary data vector
-std::vector<uint8_t> DeviceManager::getDevicesDataBinary() const
+std::vector<uint8_t> DeviceManager::getDevicesDataBinary(uint32_t maxResponsesToReturn, uint32_t* pRemaining) const
 {
     std::vector<uint8_t> binaryData;
     binaryData.reserve(500);
+    uint32_t remainingTotal = 0;
 
     // Add bus data
     uint16_t connModeBusNum = DEVICE_CONN_MODE_FIRST_BUS;
@@ -522,7 +548,9 @@ std::vector<uint8_t> DeviceManager::getDevicesDataBinary() const
             continue;
 
         // Add the bus data
-        std::vector<uint8_t> busBinaryData = pDevicesIF->getQueuedDeviceDataBinary(connModeBusNum);
+        uint32_t busRemaining = 0;
+        std::vector<uint8_t> busBinaryData = pDevicesIF->getQueuedDeviceDataBinary(connModeBusNum, maxResponsesToReturn, &busRemaining);
+        remainingTotal += busRemaining;
         binaryData.insert(binaryData.end(), busBinaryData.begin(), busBinaryData.end());
 
         // Next bus
@@ -545,6 +573,9 @@ std::vector<uint8_t> DeviceManager::getDevicesDataBinary() const
                 pDevice->getDeviceName().c_str(), Raft::getHexStr(deviceBinaryData.data(), deviceBinaryData.size()).c_str());
 #endif        
     }
+
+    if (pRemaining)
+        *pRemaining = remainingTotal;
 
     return binaryData;
 }
@@ -600,6 +631,26 @@ void DeviceManager::getDevicesHash(std::vector<uint8_t>& stateHash) const
 #ifdef DEBUG_JSON_DEVICE_HASH
     LOG_I(MODULE_PREFIX, "getDevicesHash => %02x%02x", stateHash[0], stateHash[1]);
 #endif
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/// @brief Pause/resume draining offline buffers based on link availability
+/// @param paused true to pause draining while link is down
+void DeviceManager::setOfflineDrainLinkPaused(bool paused)
+{
+    if (_offlineDrainLinkPaused == paused)
+        return;
+    _offlineDrainLinkPaused = paused;
+
+    for (RaftBus* pBus : raftBusSystem.getBusList())
+    {
+        if (!pBus)
+            continue;
+        RaftBusDevicesIF* pDevicesIF = pBus->getBusDevicesIF();
+        if (!pDevicesIF)
+            continue;
+        pDevicesIF->setOfflineDrainLinkPaused(paused);
+    }
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -794,6 +845,388 @@ RaftRetCode DeviceManager::apiDevMan(const String &reqStr, String &respStr, cons
 
         // Set result
         return Raft::setJsonBoolResult(reqStr.c_str(), respStr, true, ("\"devinfo\":" + devInfo).c_str());
+    }
+
+    // Check for offline buffer stats and control
+    if (cmdName.equalsIgnoreCase("offlinebuf"))
+    {
+        auto parseAddrList = [](const String& addrCsv, std::vector<BusElemAddrType>& outAddrs)
+        {
+            int startPos = 0;
+            while (startPos < addrCsv.length())
+            {
+                int commaPos = addrCsv.indexOf(',', startPos);
+                String token = (commaPos == -1) ? addrCsv.substring(startPos) : addrCsv.substring(startPos, commaPos);
+                token.trim();
+                if (token.length() > 0)
+                    outAddrs.push_back(strtoul(token.c_str(), nullptr, 0));
+                if (commaPos == -1)
+                    break;
+                startPos = commaPos + 1;
+            }
+        };
+        auto parseTypeList = [](const String& typeCsv, std::vector<std::string>& outTypes)
+        {
+            int startPos = 0;
+            while (startPos < typeCsv.length())
+            {
+                int commaPos = typeCsv.indexOf(',', startPos);
+                String token = (commaPos == -1) ? typeCsv.substring(startPos) : typeCsv.substring(startPos, commaPos);
+                token.trim();
+                if (token.length() > 0)
+                    outTypes.push_back(std::string(token.c_str()));
+                if (commaPos == -1)
+                    break;
+                startPos = commaPos + 1;
+            }
+        };
+        auto addrSetToJson = [](const std::set<BusElemAddrType>& addrs) -> String
+        {
+            String out = "[";
+            bool first = true;
+            for (auto addr : addrs)
+            {
+                out += first ? "" : ",";
+                out += "\"0x" + String(addr, 16) + "\"";
+                first = false;
+            }
+            out += "]";
+            return out;
+        };
+        auto strSetToJson = [](const std::set<std::string>& values) -> String
+        {
+            String out = "[";
+            bool first = true;
+            for (const auto& val : values)
+            {
+                out += first ? "" : ",";
+                out += "\"" + String(val.c_str()) + "\"";
+                first = false;
+            }
+            out += "]";
+            return out;
+        };
+        auto rateOverridesToJson = [](const std::map<BusElemAddrType, uint32_t>& overridesUs) -> String
+        {
+            if (overridesUs.empty())
+                return "";
+            String out = "{";
+            bool first = true;
+            for (const auto& kv : overridesUs)
+            {
+                out += first ? "" : ",";
+                out += "\"0x" + String(kv.first, 16) + "\":" + String(kv.second / 1000);
+                first = false;
+            }
+            out += "}";
+            return out;
+        };
+        auto toLower = [](const std::string& inStr)
+        {
+            std::string out(inStr);
+            std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c){ return std::tolower(c); });
+            return out;
+        };
+
+        String busName = jsonParams.getString("bus", "");
+        String action = jsonParams.getString("action", "status");
+        String addrCsv = jsonParams.getString("addr", "");
+        String typeCsv = jsonParams.getString("type", "");
+        // Tolerate URL-encoded commas in CSV params (e.g. "VL53L4CD%2CLSM6DS")
+        addrCsv.replace("%2C", ",");
+        addrCsv.replace("%2c", ",");
+        typeCsv.replace("%2C", ",");
+        typeCsv.replace("%2c", ",");
+        int32_t rateOverrideMsIn = jsonParams.getLong("rateMs", 0);
+        uint32_t rateOverrideMs = rateOverrideMsIn > 0 ? (uint32_t)rateOverrideMsIn : 0;
+        int32_t startParam = jsonParams.getLong("start", 0);
+        uint32_t startIdx = startParam > 0 ? (uint32_t)startParam : 0;
+        int32_t countParam = jsonParams.getLong("count", 0);
+        uint32_t maxResponses = countParam > 0 ? (uint32_t)countParam : 0;
+        int32_t maxBytesParam = jsonParams.getLong("maxBytes", 0);
+        uint32_t maxBytes = maxBytesParam > 0 ? (uint32_t)maxBytesParam : 0;
+        bool clearOnStop = jsonParams.getBool("clear", false);
+        bool nonDestructiveFetch = jsonParams.getBool("nonDestructive", true);
+        bool simulateOnly = jsonParams.getBool("simulate", false);
+
+        bool doStart = action.equalsIgnoreCase("start") || action.equalsIgnoreCase("resume");
+        bool doStop = action.equalsIgnoreCase("stop") || action.equalsIgnoreCase("pause");
+        bool doReset = action.equalsIgnoreCase("reset") || action.equalsIgnoreCase("clear");
+        bool doPeek = action.equalsIgnoreCase("peek") || (action.equalsIgnoreCase("fetch") && nonDestructiveFetch);
+
+        std::vector<BusElemAddrType> requestedAddrs;
+        parseAddrList(addrCsv, requestedAddrs);
+        std::vector<std::string> requestedTypes;
+        parseTypeList(typeCsv, requestedTypes);
+        std::set<std::string> requestedTypesLower;
+        for (const auto& typeName : requestedTypes)
+            requestedTypesLower.insert(toLower(typeName));
+
+        LOG_I(MODULE_PREFIX, "offlinebuf action %s bus %s addrCsv %s typeCsv %s rateMs %u start %u count %u maxBytes %u",
+            action.c_str(), busName.c_str(), addrCsv.c_str(), typeCsv.c_str(),
+            (unsigned)rateOverrideMs, (unsigned)startIdx, (unsigned)maxResponses, (unsigned)maxBytes);
+
+        bool busMatched = false;
+        String statsJson;
+        String controlJson;
+        String peekJson;
+        uint32_t peekRemainingTotal = 0;
+        uint64_t offlineBytesTotal = 0;
+        String estimateJson;
+
+        for (RaftBus* pBus : raftBusSystem.getBusList())
+        {
+            if (!pBus || ((busName.length() > 0) && !pBus->getBusName().equalsIgnoreCase(busName)))
+                continue;
+            busMatched = true;
+            RaftBusDevicesIF* pDevicesIF = pBus->getBusDevicesIF();
+            if (!pDevicesIF)
+                continue;
+
+            std::vector<BusElemAddrType> allAddrs;
+            pDevicesIF->getDeviceAddresses(allAddrs, false);
+            if (allAddrs.empty())
+                continue;
+
+            std::set<BusElemAddrType> requestedAddrSet(requestedAddrs.begin(), requestedAddrs.end());
+            std::vector<BusElemAddrType> targetAddrs;
+            for (auto addr : allAddrs)
+            {
+                bool addrMatch = !requestedAddrSet.empty() && (requestedAddrSet.count(addr) > 0);
+                bool typeMatch = false;
+                if (!requestedTypesLower.empty())
+                {
+                    std::string typeName;
+                    if (pDevicesIF->getDeviceTypeName(addr, typeName))
+                        typeMatch = requestedTypesLower.count(toLower(typeName)) > 0;
+                }
+                if (requestedAddrSet.empty() && requestedTypesLower.empty())
+                {
+                    targetAddrs.push_back(addr);
+                }
+                else if (addrMatch || typeMatch)
+                {
+                    targetAddrs.push_back(addr);
+                }
+            }
+            if (targetAddrs.empty())
+            {
+                // If a specific addr/type was requested but nothing matched, skip this bus
+                if (!requestedAddrSet.empty() || !requestedTypesLower.empty())
+                    continue;
+                // Otherwise, default to all addresses on the bus
+                targetAddrs = allAddrs;
+            }
+
+            if (simulateOnly)
+            {
+                std::map<BusElemAddrType, EstAllocInfo> estBytes;
+                if (pDevicesIF->estimateOfflineAllocations(targetAddrs, estBytes) && !estBytes.empty())
+                {
+                    String busEstimate;
+                    for (const auto& kv : estBytes)
+                    {
+                        if (busEstimate.length() > 0)
+                            busEstimate += ",";
+                        busEstimate += "\"0x";
+                        busEstimate += String(kv.first, 16);
+                        busEstimate += "\":{";
+                        busEstimate += "\"bytes\":";
+                        busEstimate += String(kv.second.allocBytes);
+                        busEstimate += ",\"bpe\":";
+                        busEstimate += String(kv.second.bytesPerEntry);
+                        busEstimate += ",\"payload\":";
+                        busEstimate += String(kv.second.payloadSize);
+                        busEstimate += ",\"meta\":";
+                        busEstimate += String(kv.second.metaSize);
+                        busEstimate += "}";
+                    }
+                    if (busEstimate.length() > 0)
+                    {
+                        if (estimateJson.length() > 0)
+                            estimateJson += ",";
+                        estimateJson += "\"";
+                        estimateJson += pBus->getBusName();
+                        estimateJson += "\":{";
+                        estimateJson += busEstimate;
+                        estimateJson += "}";
+                    }
+                }
+            }
+            else if (doStart)
+            {
+                pDevicesIF->setOfflineBufferPaused(std::vector<BusElemAddrType>(), false);
+                if (targetAddrs.size() < allAddrs.size())
+                {
+                    std::vector<BusElemAddrType> pauseAddrs;
+                    for (auto addr : allAddrs)
+                    {
+                        if (std::find(targetAddrs.begin(), targetAddrs.end(), addr) == targetAddrs.end())
+                            pauseAddrs.push_back(addr);
+                    }
+                    if (!pauseAddrs.empty())
+                        pDevicesIF->setOfflineBufferPaused(pauseAddrs, true);
+                }
+                // Keep draining paused by default to avoid consuming buffered backlog automatically
+                pDevicesIF->setOfflineDrainPaused(std::vector<BusElemAddrType>(), true);
+                if (rateOverrideMs > 0)
+                    pDevicesIF->applyOfflineRateOverride(targetAddrs, rateOverrideMs);
+                // Explicitly ensure target addresses are unpaused for buffering after rate override
+                if (!targetAddrs.empty())
+                    pDevicesIF->setOfflineBufferPaused(targetAddrs, false);
+                // Record selection for visibility
+                pDevicesIF->setOfflineDrainSelection(targetAddrs, requestedTypes, false);
+                // Rebalance buffers across current selection
+                pDevicesIF->rebalanceOfflineBuffers(targetAddrs);
+            }
+            if (doStop)
+            {
+                if (targetAddrs.size() == allAddrs.size())
+                    pDevicesIF->setOfflineBufferPaused(std::vector<BusElemAddrType>(), true);
+                else
+                    pDevicesIF->setOfflineBufferPaused(targetAddrs, true);
+                pDevicesIF->setOfflineDrainPaused(std::vector<BusElemAddrType>(), true);
+                pDevicesIF->clearOfflineRateOverride(targetAddrs);
+                pDevicesIF->setOfflineDrainSelection(std::vector<BusElemAddrType>(), std::vector<std::string>(), false);
+                if (clearOnStop)
+                    pDevicesIF->resetOfflineBuffers(targetAddrs);
+            }
+            if (doReset && !doStop)
+            {
+                pDevicesIF->resetOfflineBuffers(targetAddrs);
+            }
+
+            // Snapshot control state for stats/response
+            std::set<BusElemAddrType> bufferPaused;
+            std::set<BusElemAddrType> drainPaused;
+            std::set<BusElemAddrType> drainSelectedAddrs;
+            std::set<std::string> drainSelectedTypes;
+            bool drainOnly = false;
+            uint32_t perBusOverride = 0;
+            bool globalBufPaused = false;
+            bool globalDrainPaused = false;
+            std::map<BusElemAddrType, uint32_t> rateOverridesUs;
+            pDevicesIF->getOfflineControlSnapshot(bufferPaused, drainPaused, drainSelectedAddrs, drainSelectedTypes,
+                        drainOnly, perBusOverride, globalBufPaused, globalDrainPaused, rateOverridesUs);
+
+            // Stats per address
+            String busJson;
+            for (auto address : targetAddrs)
+            {
+                OfflineDataStats stats = pDevicesIF->getOfflineStats(address);
+                if (stats.maxEntries == 0)
+                    continue;
+                offlineBytesTotal += (uint64_t)stats.maxEntries * (uint64_t)(stats.payloadSize + stats.metaSize);
+                bool bufPaused = globalBufPaused || (bufferPaused.count(address) > 0);
+                bool drPaused = globalDrainPaused || (drainPaused.count(address) > 0);
+                bool selectedByAddr = drainSelectedAddrs.count(address) > 0;
+                bool selectedByType = false;
+                if (pDevicesIF && !drainSelectedTypes.empty())
+                {
+                    std::string typeName;
+                    if (pDevicesIF->getDeviceTypeName(address, typeName))
+                        selectedByType = drainSelectedTypes.count(typeName) > 0;
+                }
+                if (drainOnly && !(selectedByAddr || selectedByType))
+                    drPaused = true;
+                String addrJson;
+                addrJson.reserve(96);
+                addrJson += "\"depth\":"; addrJson += String(stats.depth);
+                addrJson += ",\"drops\":"; addrJson += String(stats.drops);
+                addrJson += ",\"max\":"; addrJson += String(stats.maxEntries);
+                addrJson += ",\"bytes\":"; addrJson += String(stats.bytesInUse());
+                addrJson += ",\"wraps\":"; addrJson += String(stats.tsWrapCount);
+                addrJson += ",\"oldestMs\":"; addrJson += String((uint32_t)stats.oldestCaptureMs);
+                addrJson += ",\"bufPaused\":"; addrJson += String(bufPaused ? 1 : 0);
+                addrJson += ",\"drainPaused\":"; addrJson += String(drPaused ? 1 : 0);
+                addrJson += ",\"payload\":"; addrJson += String(stats.payloadSize);
+                addrJson += ",\"meta\":"; addrJson += String(stats.metaSize);
+
+                if (busJson.length() > 0)
+                    busJson += ",";
+                busJson += "\"0x";
+                busJson += String(address, 16);
+                busJson += "\":{";
+                busJson += addrJson;
+                busJson += "}";
+            }
+            if (statsJson.length() > 0)
+                statsJson += ",";
+            statsJson += "\"";
+            statsJson += pBus->getBusName();
+            statsJson += "\":{";
+            statsJson += busJson;
+            statsJson += "}";
+
+            String busCtrl;
+            busCtrl.reserve(160);
+            busCtrl += "\"bufferPausedGlobal\":"; busCtrl += String(globalBufPaused ? 1 : 0);
+            busCtrl += ",\"drainPausedGlobal\":"; busCtrl += String(globalDrainPaused ? 1 : 0);
+            busCtrl += ",\"bufferPaused\":"; busCtrl += addrSetToJson(bufferPaused);
+            busCtrl += ",\"drainPaused\":"; busCtrl += addrSetToJson(drainPaused);
+            busCtrl += ",\"selectedAddrs\":"; busCtrl += addrSetToJson(drainSelectedAddrs);
+            busCtrl += ",\"selectedTypes\":"; busCtrl += strSetToJson(drainSelectedTypes);
+            if (perBusOverride > 0)
+            {
+                busCtrl += ",\"maxPerPublishOverride\":";
+                busCtrl += String(perBusOverride);
+            }
+            String rateOverridesJson = rateOverridesToJson(rateOverridesUs);
+            if (rateOverridesJson.length() > 0)
+            {
+                busCtrl += ",\"rateOverrides\":"; busCtrl += rateOverridesJson;
+            }
+            if (controlJson.length() > 0)
+                controlJson += ",";
+            controlJson += "\"";
+            controlJson += pBus->getBusName();
+            controlJson += "\":{";
+            controlJson += busCtrl;
+            controlJson += "}";
+
+            if (doPeek)
+            {
+                uint32_t busRemaining = 0;
+                String busPeek = pDevicesIF->peekOfflineDataJson(targetAddrs, startIdx, maxResponses, maxBytes, busRemaining);
+                if (busPeek.length() > 2)
+                {
+                    if (peekJson.length() > 0)
+                        peekJson += ",";
+                    peekJson += "\"";
+                    peekJson += pBus->getBusName();
+                    peekJson += "\":";
+                    peekJson += busPeek;
+                }
+                peekRemainingTotal += busRemaining;
+            }
+        }
+        if ((busName.length() > 0) && !busMatched)
+            return Raft::setJsonErrorResult(reqStr.c_str(), respStr, "failBusNotFound");
+        String statsWrapper = "{" + statsJson + "}";
+        String extra = "\"stats\":" + statsWrapper;
+        if (controlJson.length() > 0)
+            extra += ",\"control\":{" + controlJson + "}";
+        if (peekJson.length() > 0)
+            extra += ",\"peek\":{" + peekJson + "}";
+        if (estimateJson.length() > 0)
+            extra += ",\"estimate\":{" + estimateJson + "}";
+        if (peekRemainingTotal > 0)
+            extra += ",\"peekRemaining\":" + String(peekRemainingTotal);
+        uint32_t freePsram = 0;
+        uint32_t freeInternal = 0;
+#ifdef ESP_PLATFORM
+        freePsram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+        freeInternal = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+#endif
+        String memJson = "\"mem\":{";
+        memJson += "\"offlineBytesInUse\":" + String((uint32_t)offlineBytesTotal);
+#ifdef ESP_PLATFORM
+        memJson += ",\"freePsram\":" + String(freePsram);
+        memJson += ",\"freeInternal\":" + String(freeInternal);
+#endif
+        memJson += "}";
+        extra += "," + memJson;
+        return Raft::setJsonBoolResult(reqStr.c_str(), respStr, true, extra.c_str());
     }
 
     // Check for raw command
