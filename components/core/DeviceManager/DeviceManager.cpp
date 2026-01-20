@@ -1078,6 +1078,7 @@ RaftRetCode DeviceManager::apiDevMan(const String &reqStr, String &respStr, cons
                 pDevicesIF->setOfflineDrainSelection(targetAddrs, requestedTypes, false);
                 // Rebalance buffers across current selection
                 pDevicesIF->rebalanceOfflineBuffers(targetAddrs);
+                pDevicesIF->setOfflineAutoResume(true, targetAddrs, rateOverrideMs);
             }
             if (doStop)
             {
@@ -1088,12 +1089,14 @@ RaftRetCode DeviceManager::apiDevMan(const String &reqStr, String &respStr, cons
                 pDevicesIF->setOfflineDrainPaused(std::vector<BusElemAddrType>(), true);
                 pDevicesIF->clearOfflineRateOverride(targetAddrs);
                 pDevicesIF->setOfflineDrainSelection(std::vector<BusElemAddrType>(), std::vector<std::string>(), false);
+                pDevicesIF->setOfflineAutoResume(false, std::vector<BusElemAddrType>(), 0);
                 if (clearOnStop)
                     pDevicesIF->resetOfflineBuffers(targetAddrs);
             }
             if (doReset && !doStop)
             {
                 pDevicesIF->resetOfflineBuffers(targetAddrs);
+                pDevicesIF->setOfflineAutoResume(false, std::vector<BusElemAddrType>(), 0);
             }
 
             // Snapshot control state for stats/response

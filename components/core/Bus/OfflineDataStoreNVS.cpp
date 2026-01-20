@@ -140,16 +140,9 @@ bool OfflineDataStoreNVS::appendBatch(const std::vector<uint8_t>& payloads, uint
     }
     else if (firstSeq > _meta.nextSeq)
     {
-        LOG_W(MODULE_PREFIX, "appendBatch seq gap ns %s nextSeq %u firstSeq %u (reset)",
+        LOG_W(MODULE_PREFIX, "appendBatch seq gap ns %s nextSeq %u firstSeq %u (continue)",
                 _nvsNamespace.c_str(), (unsigned)_meta.nextSeq, (unsigned)firstSeq);
-        clear();
-        resetMeta(payloadSize, _meta.timestampBytes, _meta.timestampResolutionUs, _meta.maxEntries);
-        _metaValid = true;
-        _ready = true;
-        if (_meta.recordsPerSegment == 0)
-            return false;
-        if (!saveMeta())
-            return false;
+        // Continue without clearing so we retain existing entries.
         _meta.nextSeq = firstSeq;
     }
 
@@ -159,10 +152,18 @@ bool OfflineDataStoreNVS::appendBatch(const std::vector<uint8_t>& payloads, uint
         uint32_t diff = _meta.nextSeq - firstSeq;
         if (diff >= count)
         {
+            LOG_I(MODULE_PREFIX, "appendBatch skip all ns %s firstSeq %u nextSeq %u count %u",
+                    _nvsNamespace.c_str(), (unsigned)firstSeq, (unsigned)_meta.nextSeq, (unsigned)count);
             outLastSeq = _meta.nextSeq > 0 ? (_meta.nextSeq - 1) : 0;
             return true; // All entries already stored
         }
         skip = diff;
+    }
+    if (skip > 0)
+    {
+        LOG_I(MODULE_PREFIX, "appendBatch skip prefix ns %s firstSeq %u nextSeq %u skip %u count %u",
+                _nvsNamespace.c_str(), (unsigned)firstSeq, (unsigned)_meta.nextSeq,
+                (unsigned)skip, (unsigned)count);
     }
 
     std::vector<uint8_t> segBuf;
@@ -234,9 +235,23 @@ bool OfflineDataStoreNVS::importTo(OfflineDataStore& dest, uint32_t importMaxEnt
         return false;
 
     uint32_t firstSeqInStore = (_meta.nextSeq >= _meta.count) ? (_meta.nextSeq - _meta.count) : 0;
-    uint32_t startSeq = _meta.importSeq + 1;
-    if (startSeq < firstSeqInStore)
+    OfflineDataStats destStats = dest.getStats();
+    bool destEmpty = destStats.depth == 0;
+    uint32_t startSeq = 0;
+    if (destEmpty)
+    {
+        // Full import when RAM buffer is empty (e.g., on boot)
         startSeq = firstSeqInStore;
+        LOG_I(MODULE_PREFIX, "importTo ns %s full import (dest empty) firstSeq %u nextSeq %u count %u importSeq %u",
+                _nvsNamespace.c_str(), (unsigned)firstSeqInStore, (unsigned)_meta.nextSeq,
+                (unsigned)_meta.count, (unsigned)_meta.importSeq);
+    }
+    else
+    {
+        startSeq = _meta.importSeq + 1;
+        if (startSeq < firstSeqInStore)
+            startSeq = firstSeqInStore;
+    }
     if (startSeq >= _meta.nextSeq)
         return true;
 
@@ -250,6 +265,11 @@ bool OfflineDataStoreNVS::importTo(OfflineDataStore& dest, uint32_t importMaxEnt
     uint32_t importCount = (available < maxEntries) ? available : maxEntries;
     if (importCount == 0)
         return false;
+    LOG_I(MODULE_PREFIX,
+            "importTo ns %s count %u nextSeq %u importSeq %u firstSeq %u startSeq %u avail %u importCount %u maxEntries %u",
+            _nvsNamespace.c_str(), (unsigned)_meta.count, (unsigned)_meta.nextSeq, (unsigned)_meta.importSeq,
+            (unsigned)firstSeqInStore, (unsigned)startSeq, (unsigned)available,
+            (unsigned)importCount, (unsigned)maxEntries);
 
     uint32_t recordSize = _meta.recordSize;
     uint32_t segmentBytes = _meta.recordsPerSegment * recordSize;
@@ -287,6 +307,9 @@ bool OfflineDataStoreNVS::importTo(OfflineDataStore& dest, uint32_t importMaxEnt
             delay(1);
     }
     _meta.importSeq = firstSeq + importCount - 1;
+    LOG_I(MODULE_PREFIX, "importTo ns %s imported %u entries seq %u..%u newImportSeq %u",
+            _nvsNamespace.c_str(), (unsigned)importCount, (unsigned)firstSeq,
+            (unsigned)(firstSeq + importCount - 1), (unsigned)_meta.importSeq);
     saveMeta();
     return true;
 #endif

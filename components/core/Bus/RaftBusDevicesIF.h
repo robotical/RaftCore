@@ -139,6 +139,12 @@ public:
     virtual void setOfflineBufferPaused(const std::vector<BusElemAddrType>& addresses, bool paused) {(void)addresses; (void)paused;}
     virtual void setOfflineDrainPaused(const std::vector<BusElemAddrType>& addresses, bool paused) {(void)addresses; (void)paused;}
     virtual void setOfflineDrainLinkPaused(bool paused) {(void)paused;}
+    virtual void setOfflineAutoResume(bool enabled, const std::vector<BusElemAddrType>& addresses, uint32_t rateOverrideMs)
+    {
+        (void)enabled;
+        (void)addresses;
+        (void)rateOverrideMs;
+    }
     virtual void resetOfflineBuffers(const std::vector<BusElemAddrType>& addresses) {(void)addresses;}
     virtual void getOfflineControlSnapshot(std::set<BusElemAddrType>& bufferPaused, std::set<BusElemAddrType>& drainPaused,
                 std::set<BusElemAddrType>& drainSelectedAddrs, std::set<std::string>& drainSelectedTypes,
