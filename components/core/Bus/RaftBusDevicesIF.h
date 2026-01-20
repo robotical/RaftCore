@@ -164,7 +164,7 @@ public:
     }
     virtual String peekOfflineDataJson(const std::vector<BusElemAddrType>& addresses,
                 uint32_t startIdx, uint32_t maxResponsesToReturn, uint32_t maxBytes,
-                uint32_t& totalRemaining) const
+                uint32_t& totalRemaining)
     {
         (void)addresses;
         (void)startIdx;

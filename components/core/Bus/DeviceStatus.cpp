@@ -110,7 +110,6 @@ void DeviceStatus::configureOfflineBuffer(uint32_t maxEntries, uint32_t payloadS
     // Keep the current paused state so reconfiguration doesn't accidentally resume buffering
     bool wasPaused = _offlineBufferPaused;
     offlineData.init(maxEntries, payloadSize, timestampBytes, timestampResolutionUs);
-    _offlineSeq = 0;
     _offlineBufferPaused = wasPaused;
 }
 

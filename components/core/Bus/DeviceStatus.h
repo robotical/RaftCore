@@ -91,6 +91,14 @@ public:
     {
         return offlineData.getMaxEntries();
     }
+    void setOfflineSeq(uint32_t nextSeq)
+    {
+        _offlineSeq = nextSeq;
+    }
+    uint32_t getOfflineSeq() const
+    {
+        return _offlineSeq;
+    }
 
     // Get device type index
     uint16_t getDeviceTypeIndex() const

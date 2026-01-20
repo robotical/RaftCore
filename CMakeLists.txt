@@ -68,6 +68,7 @@ idf_component_register(
     "components/core/Bus/BusAddrStatus.cpp"
     "components/core/Bus/BusSerial.cpp"
     "components/core/Bus/DeviceStatus.cpp"
+    "components/core/Bus/OfflineDataStoreNVS.cpp"
     "components/core/Bus/RaftBusSystem.cpp"
     "components/core/ConfigPinMap/ConfigPinMap.cpp"
     "components/core/DebounceButton/DebounceButton.cpp"
@@ -159,4 +160,3 @@ idf_component_register(
   REQUIRES
     ${RAFT_CORE_REQUIRES}
 )
-
