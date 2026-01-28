@@ -952,7 +952,8 @@ RaftRetCode DeviceManager::apiDevMan(const String &reqStr, String &respStr, cons
         bool doStart = action.equalsIgnoreCase("start") || action.equalsIgnoreCase("resume");
         bool doStop = action.equalsIgnoreCase("stop") || action.equalsIgnoreCase("pause");
         bool doReset = action.equalsIgnoreCase("reset") || action.equalsIgnoreCase("clear");
-        bool doPeek = action.equalsIgnoreCase("peek") || (action.equalsIgnoreCase("fetch") && nonDestructiveFetch);
+        bool doStream = action.equalsIgnoreCase("stream");
+        bool doPeek = action.equalsIgnoreCase("peek") || (action.equalsIgnoreCase("fetch") && nonDestructiveFetch) || doStream;
 
         std::vector<BusElemAddrType> requestedAddrs;
         parseAddrList(addrCsv, requestedAddrs);
@@ -966,6 +967,22 @@ RaftRetCode DeviceManager::apiDevMan(const String &reqStr, String &respStr, cons
             action.c_str(), busName.c_str(), addrCsv.c_str(), typeCsv.c_str(),
             (unsigned)rateOverrideMs, (unsigned)startIdx, (unsigned)maxResponses, (unsigned)maxBytes);
 
+        BusElemAddrType streamAddr = 0;
+        bool streamAddrValid = false;
+        if (doStream)
+        {
+            if ((requestedAddrs.size() != 1) || !requestedTypesLower.empty())
+                return Raft::setJsonErrorResult(reqStr.c_str(), respStr, "failStreamAddrRequired");
+            streamAddr = requestedAddrs[0];
+            streamAddrValid = true;
+            if (maxBytes == 0)
+                maxBytes = 4096;
+            if (maxBytes > 16384)
+                maxBytes = 16384;
+            if (maxBytes < 256)
+                maxBytes = 256;
+        }
+
         bool busMatched = false;
         String statsJson;
         String controlJson;
@@ -973,6 +990,11 @@ RaftRetCode DeviceManager::apiDevMan(const String &reqStr, String &respStr, cons
         uint32_t peekRemainingTotal = 0;
         uint64_t offlineBytesTotal = 0;
         String estimateJson;
+        String streamJson;
+        uint32_t streamDepth = 0;
+        uint32_t streamPayload = 0;
+        uint32_t streamMeta = 0;
+        bool streamFound = false;
 
         for (RaftBus* pBus : raftBusSystem.getBusList())
         {
@@ -1152,6 +1174,17 @@ RaftRetCode DeviceManager::apiDevMan(const String &reqStr, String &respStr, cons
                 busJson += "\":{";
                 busJson += addrJson;
                 busJson += "}";
+
+                if (doStream && streamAddrValid && (address == streamAddr))
+                {
+                    streamDepth = stats.depth;
+                    streamPayload = stats.payloadSize;
+                    streamMeta = stats.metaSize;
+                    streamFound = true;
+                    uint32_t bytesPerEntry = streamPayload + streamMeta;
+                    if ((bytesPerEntry > 0) && (maxBytes < bytesPerEntry))
+                        maxBytes = bytesPerEntry;
+                }
             }
             if (statsJson.length() > 0)
                 statsJson += ",";
@@ -1205,12 +1238,44 @@ RaftRetCode DeviceManager::apiDevMan(const String &reqStr, String &respStr, cons
         }
         if ((busName.length() > 0) && !busMatched)
             return Raft::setJsonErrorResult(reqStr.c_str(), respStr, "failBusNotFound");
+
+        if (doStream && streamAddrValid)
+        {
+            if (!streamFound)
+                return Raft::setJsonErrorResult(reqStr.c_str(), respStr, "failStreamAddrNotFound");
+
+            uint32_t bytesPerEntry = streamPayload + streamMeta;
+            uint32_t available = (streamDepth > startIdx) ? (streamDepth - startIdx) : 0;
+            uint32_t capByBytes = (bytesPerEntry > 0) ? (maxBytes / bytesPerEntry) : 0;
+            if (capByBytes == 0)
+                capByBytes = available;
+            uint32_t capByCount = maxResponses > 0 ? maxResponses : available;
+            uint32_t streamReturned = available;
+            if (capByBytes < streamReturned)
+                streamReturned = capByBytes;
+            if (capByCount < streamReturned)
+                streamReturned = capByCount;
+            uint32_t nextStart = startIdx + streamReturned;
+            uint32_t remaining = (streamDepth > nextStart) ? (streamDepth - nextStart) : 0;
+            String streamAddrStr = "0x" + String(streamAddr, 16);
+            streamJson = "\"stream\":{";
+            streamJson += "\"addr\":\"" + streamAddrStr + "\"";
+            streamJson += ",\"start\":" + String(startIdx);
+            streamJson += ",\"returned\":" + String(streamReturned);
+            streamJson += ",\"nextStart\":" + String(nextStart);
+            streamJson += ",\"remaining\":" + String(remaining);
+            streamJson += ",\"maxBytes\":" + String(maxBytes);
+            streamJson += "}";
+        }
+
         String statsWrapper = "{" + statsJson + "}";
         String extra = "\"stats\":" + statsWrapper;
         if (controlJson.length() > 0)
             extra += ",\"control\":{" + controlJson + "}";
         if (peekJson.length() > 0)
             extra += ",\"peek\":{" + peekJson + "}";
+        if (streamJson.length() > 0)
+            extra += "," + streamJson;
         if (estimateJson.length() > 0)
             extra += ",\"estimate\":{" + estimateJson + "}";
         if (peekRemainingTotal > 0)
