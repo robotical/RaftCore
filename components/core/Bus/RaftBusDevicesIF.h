@@ -132,6 +132,14 @@ public:
         return OfflineDataStats();
     }
 
+    /// @brief Get NVS-backed offline count (if supported)
+    /// @param address device address
+    virtual uint32_t getOfflineNvsCount(BusElemAddrType address) const
+    {
+        (void)address;
+        return 0;
+    }
+
     // Optional offline control interfaces (default no-op)
     virtual void setOfflineMaxPerPublishOverride(uint32_t maxPerPublish) {(void)maxPerPublish;}
     virtual void setOfflineDrainSelection(const std::vector<BusElemAddrType>& addresses, const std::vector<std::string>& typeNames,
