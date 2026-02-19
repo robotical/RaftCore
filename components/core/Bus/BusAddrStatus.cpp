@@ -31,6 +31,7 @@ bool BusAddrStatus::handleResponding(bool isResponding, bool &flagSpuriousRecord
                 isChange = !isChange;
                 count = 0;
                 isOnline = true;
+                onlineState = DeviceOnlineState::ONLINE;
                 wasOnceOnline = true;
                 flagForDeletion = false;
                 return true;
@@ -53,6 +54,7 @@ bool BusAddrStatus::handleResponding(bool isResponding, bool &flagSpuriousRecord
                 else
                     isChange = !isChange;
                 isOnline = false;
+                onlineState = DeviceOnlineState::OFFLINE;
                 // flag for deletion next time around the loop
                 // we can't do it at the same time we make the change to offline as we need the busStatusMgr in RaftI2C to log the change
                 // and call the busElemStatusCB to clean up the device first, before the we delete the record in the busStatusManager's address list

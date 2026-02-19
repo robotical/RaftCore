@@ -21,6 +21,9 @@ extern "C" {
 #include <stdint.h>
 #include <stdbool.h>
 
+// Wait indefinitely for mutex lock
+static const uint32_t RAFT_MUTEX_WAIT_FOREVER = 0xFFFFFFFF;
+
 // Platform-independent thread handle and mutex definitions
 #if defined(MICROPY_PY_THREAD)
 

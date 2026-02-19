@@ -737,6 +737,7 @@ void DeviceManager::addRestAPIEndpoints(RestAPIEndpointManager &endpointManager)
     endpointManager.addEndpoint("devman", RestAPIEndpoint::ENDPOINT_CALLBACK, RestAPIEndpoint::ENDPOINT_GET,
                             std::bind(&DeviceManager::apiDevMan, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3),
                             " devman/typeinfo?bus=<busName>&type=<typeName> - Get type info,"
+                            " devman/pollrate?bus=<busName>&addr=<addr>&rateHz=<Hz> - Set/get per-device poll rate,"
                             " devman/cmdraw?bus=<busName>&addr=<addr>&hexWr=<hexWriteData>&numToRd=<numBytesToRead>&msgKey=<msgKey> - Send raw command to device,"
                             " devman/demo?type=<deviceType>&rate=<sampleRateMs>&duration=<durationMs>&offlineIntvS=<N>&offlineDurS=<M> - Start demo device");
     LOG_I(MODULE_PREFIX, "addRestAPIEndpoints added devman");
@@ -845,6 +846,138 @@ RaftRetCode DeviceManager::apiDevMan(const String &reqStr, String &respStr, cons
 
         // Set result
         return Raft::setJsonBoolResult(reqStr.c_str(), respStr, true, ("\"devinfo\":" + devInfo).c_str());
+    }
+
+    // Check for poll rate set/get
+    if (cmdName.equalsIgnoreCase("pollrate"))
+    {
+        // Get bus name
+        String busName = jsonParams.getString("bus", "");
+        if (busName.length() == 0)
+            return Raft::setJsonErrorResult(reqStr.c_str(), respStr, "failBusMissing");
+
+        // Get address
+        String addrStr = jsonParams.getString("addr", "");
+        if (addrStr.length() == 0)
+            return Raft::setJsonErrorResult(reqStr.c_str(), respStr, "failMissingAddr");
+
+        // Resolve bus (name or numeric index)
+        RaftBus* pBus = raftBusSystem.getBusByName(busName);
+        if (!pBus)
+        {
+            if ((busName.length() > 0) && isdigit(busName[0]))
+            {
+                int busNum = busName.toInt();
+                int busIdx = 1;
+                for (auto& bus : raftBusSystem.getBusList())
+                {
+                    if (busIdx++ == busNum)
+                    {
+                        pBus = bus;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!pBus)
+            return Raft::setJsonErrorResult(reqStr.c_str(), respStr, "failBusNotFound");
+
+        // Parse address (decimal, 0x-prefixed hex, or hex-without-prefix like "76a")
+        auto parseBusAddr = [](const String& inAddr, BusElemAddrType& outAddr) -> bool
+        {
+            String addrTrimmed = inAddr;
+            addrTrimmed.trim();
+            if (addrTrimmed.length() == 0)
+                return false;
+
+            const char* pStart = addrTrimmed.c_str();
+            int base = 10;
+            if ((addrTrimmed.length() > 2) && (addrTrimmed.charAt(0) == '0') &&
+                ((addrTrimmed.charAt(1) == 'x') || (addrTrimmed.charAt(1) == 'X')))
+            {
+                base = 16;
+                pStart += 2;
+            }
+            else
+            {
+                for (uint32_t i = 0; i < addrTrimmed.length(); i++)
+                {
+                    char c = addrTrimmed.charAt(i);
+                    if (((c >= 'a') && (c <= 'f')) || ((c >= 'A') && (c <= 'F')))
+                    {
+                        base = 16;
+                        break;
+                    }
+                }
+            }
+
+            char* pEnd = nullptr;
+            unsigned long parsedVal = strtoul(pStart, &pEnd, base);
+            if ((pEnd == pStart) || (pEnd == nullptr) || (*pEnd != '\0'))
+                return false;
+
+            outAddr = static_cast<BusElemAddrType>(parsedVal);
+            return true;
+        };
+
+        BusElemAddrType addr = 0;
+        if (!parseBusAddr(addrStr, addr))
+            return Raft::setJsonErrorResult(reqStr.c_str(), respStr, "failAddrNotFound");
+
+        // Check address validity
+        bool addrIsValid = false;
+        pBus->isElemResponding(addr, &addrIsValid);
+        if (!addrIsValid)
+            return Raft::setJsonErrorResult(reqStr.c_str(), respStr, "failAddrNotFound");
+
+        // Optional set rate
+        String rateHzStr = jsonParams.getString("rateHz", "");
+        if (rateHzStr.length() > 0)
+        {
+            double rateHz = atof(rateHzStr.c_str());
+            if (!(rateHz > 0.0))
+                return Raft::setJsonErrorResult(reqStr.c_str(), respStr, "failInvalidRate");
+
+            // API uses milliseconds for setDevicePollInterval in current bus implementations
+            uint32_t pollIntervalMs = (uint32_t)((1000.0 / rateHz) + 0.5);
+            if (pollIntervalMs < 1)
+                pollIntervalMs = 1;
+
+            LOG_I(MODULE_PREFIX, "pollrate set req bus %s addr 0x%04lx rateHz %.3f intervalMs %u",
+                    pBus->getBusName().c_str(),
+                    (unsigned long)addr,
+                    rateHz,
+                    (unsigned)pollIntervalMs);
+
+            if (!pBus->setDevicePollInterval(addr, pollIntervalMs))
+                return Raft::setJsonErrorResult(reqStr.c_str(), respStr, "failUnsupportedBus");
+
+            uint32_t appliedIntervalUs = pBus->getDevicePollIntervalUs(addr);
+            LOG_I(MODULE_PREFIX, "pollrate set applied bus %s addr 0x%04lx intervalUs %u",
+                    pBus->getBusName().c_str(),
+                    (unsigned long)addr,
+                    (unsigned)appliedIntervalUs);
+        }
+
+        // Read back
+        uint32_t pollIntervalUs = pBus->getDevicePollIntervalUs(addr);
+        if (pollIntervalUs == 0)
+            return Raft::setJsonErrorResult(reqStr.c_str(), respStr, "failUnsupportedBus");
+
+        uint32_t pollIntervalMs = (pollIntervalUs + 999) / 1000;
+        if (pollIntervalMs < 1)
+            pollIntervalMs = 1;
+        double effectiveRateHz = 1000.0 / pollIntervalMs;
+        LOG_I(MODULE_PREFIX, "pollrate readback bus %s addr 0x%04lx intervalUs %u intervalMs %u rateHz %.3f",
+                pBus->getBusName().c_str(),
+                (unsigned long)addr,
+                (unsigned)pollIntervalUs,
+                (unsigned)pollIntervalMs,
+                effectiveRateHz);
+        String addrOut = "0x" + String((unsigned long)addr, 16);
+        String extra = "\"bus\":\"" + pBus->getBusName() + "\",\"addr\":\"" + addrOut + "\",\"pollIntervalMs\":" +
+                       String(pollIntervalMs) + ",\"rateHz\":" + String(effectiveRateHz, 3);
+        return Raft::setJsonBoolResult(reqStr.c_str(), respStr, true, extra.c_str());
     }
 
     // Check for offline buffer stats and control

@@ -14,10 +14,13 @@
 #include "PollDataAggregator.h"
 #include "OfflineDataStore.h"
 
+using DeviceTypeIndexType = uint16_t;
+static constexpr DeviceTypeIndexType DEVICE_TYPE_INDEX_INVALID = USHRT_MAX;
+
 class DeviceStatus
 {
 public:
-    static const uint16_t DEVICE_TYPE_INDEX_INVALID = USHRT_MAX;
+    static const DeviceTypeIndexType DEVICE_TYPE_INDEX_INVALID = ::DEVICE_TYPE_INDEX_INVALID;
 
     DeviceStatus()
     {
@@ -101,7 +104,7 @@ public:
     }
 
     // Get device type index
-    uint16_t getDeviceTypeIndex() const
+    DeviceTypeIndexType getDeviceTypeIndex() const
     {
         return deviceTypeIndex;
     }
@@ -113,7 +116,7 @@ public:
     }
 
     // Device type index
-    uint16_t deviceTypeIndex = DEVICE_TYPE_INDEX_INVALID;
+    DeviceTypeIndexType deviceTypeIndex = DEVICE_TYPE_INDEX_INVALID;
 
     // Device ident polling - polling related to the device type
     DevicePollingInfo deviceIdentPolling;

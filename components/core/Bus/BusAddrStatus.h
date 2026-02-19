@@ -11,10 +11,25 @@
 #include "RaftDeviceConsts.h"
 #include "DeviceStatus.h"
 
+enum class DeviceOnlineState
+{
+    INITIAL,
+    ONLINE,
+    OFFLINE
+};
+
 // Bus address status
 class BusAddrStatus
 {
 public:
+    BusAddrStatus() = default;
+    BusAddrStatus(BusElemAddrType address, DeviceOnlineState onlineState, bool isChange, bool isNewlyIdentified)
+        : address(address), isChange(isChange), isOnline(onlineState == DeviceOnlineState::ONLINE),
+          wasOnceOnline(onlineState == DeviceOnlineState::ONLINE), isNewlyIdentified(isNewlyIdentified),
+          onlineState(onlineState)
+    {
+    }
+
     // Address and slot
     BusElemAddrType address = 0;
 
@@ -34,6 +49,7 @@ public:
     bool slotResolved : 1 = false;
     bool isNewlyIdentified : 1 = false;
     bool flagForDeletion : 1 = false;
+    DeviceOnlineState onlineState = DeviceOnlineState::INITIAL;
 
     // Access barring
     uint32_t barStartMs = 0;
@@ -54,6 +70,17 @@ public:
     bool handleResponding(bool isResponding, bool &flagSpuriousRecord, 
             uint32_t okMax = ADDR_RESP_COUNT_OK_MAX_DEFAULT, 
             uint32_t failMax = ADDR_RESP_COUNT_FAIL_MAX_DEFAULT);
+
+    static const char* getOnlineStateStr(DeviceOnlineState state)
+    {
+        switch (state)
+        {
+            case DeviceOnlineState::INITIAL: return "INITIAL";
+            case DeviceOnlineState::ONLINE: return "ONLINE";
+            case DeviceOnlineState::OFFLINE: return "OFFLINE";
+            default: return "UNKNOWN";
+        }
+    }
     
     // Register for data change
     void registerForDataChange(RaftDeviceDataChangeCB dataChangeCB, uint32_t minTimeBetweenReportsMs, const void* pCallbackInfo)
