@@ -15,12 +15,13 @@
 #include "RaftBusStats.h"
 #include "RaftBusDevicesIF.h"
 #include "VirtualPinResult.h"
+#include "BusAddrStatus.h"
 
 class BusRequestInfo;
 class RaftBus;
 class RaftJsonIF;
 
-typedef std::function<void(RaftBus& bus, const std::vector<BusElemAddrAndStatus>& statusChanges)> BusElemStatusCB;
+typedef std::function<void(RaftBus& bus, const std::vector<BusAddrStatus>& statusChanges)> BusElemStatusCB;
 typedef std::function<void(RaftBus& bus, BusOperationStatus busOperationStatus)> BusOperationStatusCB;
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -46,10 +47,12 @@ public:
 
     /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     /// @brief Setup
+    /// @param busNum - bus number
     /// @param config - configuration
     /// @return true if successful
-    virtual bool setup(const RaftJsonIF& config)
+    virtual bool setup(BusNumType busNum, const RaftJsonIF& config)
     {
+        _busNum = busNum;
         return false;
     }
 
@@ -219,30 +222,41 @@ public:
     }
 
     /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-    /// @brief Convert bus address to string
-    /// @param addr - address
-    /// @return address as a string
-    virtual String addrToString(BusElemAddrType addr) const
+    /// @brief Set device polling interval for an address
+    /// @param address Composite address
+    /// @param pollIntervalUs Polling interval in microseconds
+    /// @return true if applied
+    virtual bool setDevicePollIntervalUs(BusElemAddrType address, uint64_t pollIntervalUs)
     {
-        return "0x" + String(addr, 16);
+        return false;
     }
 
     /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-    /// @brief Create unique id for a bus element
-    /// @param addr - address
-    /// @return unique id
-    virtual String formUniqueId(BusElemAddrType addr) const
+    /// @brief Get device polling interval for an address
+    /// @param address Composite address
+    /// @return Polling interval in microseconds (0 if not supported)
+    virtual uint64_t getDevicePollIntervalUs(BusElemAddrType address) const
     {
-        return getBusName() + "_" + addrToString(addr);
+        return 0;
     }
 
     /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-    /// @brief Convert string to bus address
-    /// @param addrStr - address as a string
-    /// @return address
-    virtual BusElemAddrType stringToAddr(const String& addrStr) const
+    /// @brief Set number of poll result samples to store for an address
+    /// @param address Composite address
+    /// @param numSamples Number of samples to store
+    /// @return true if applied
+    virtual bool setDeviceNumSamples(BusElemAddrType address, uint32_t numSamples)
     {
-        return strtol(addrStr.c_str(), NULL, 16);
+        return false;
+    }
+
+    /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    /// @brief Get number of poll result samples stored for an address
+    /// @param address Composite address
+    /// @return Number of samples (0 if not supported)
+    virtual uint32_t getDeviceNumSamples(BusElemAddrType address) const
+    {
+        return 0;
     }
 
     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -258,17 +272,17 @@ public:
     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////    
     /// @brief Get bus element poll responses for a specific address
     /// @param address - address of device to get responses for
-    /// @param isOnline - (out) true if device is online
+    /// @param onlineState - (out) device online state
     /// @param deviceTypeIndex - (out) device type index
     /// @param devicePollResponseData - (out) vector to store the device poll response data
     /// @param responseSize - (out) size of the response data
     /// @param maxResponsesToReturn - maximum number of responses to return (0 for no limit)
     /// @return number of responses returned
-    virtual uint32_t getBusElemPollResponses(BusElemAddrType address, bool& isOnline, uint16_t& deviceTypeIndex, 
+    virtual uint32_t getBusElemPollResponses(BusElemAddrType address, DeviceOnlineState& onlineState, uint16_t& deviceTypeIndex, 
                 std::vector<uint8_t>& devicePollResponseData, 
                 uint32_t& responseSize, uint32_t maxResponsesToReturn)
     {
-        isOnline = false;
+        onlineState = DeviceOnlineState::OFFLINE;
         deviceTypeIndex = 0;
         devicePollResponseData.clear();
         responseSize = 0;
@@ -340,7 +354,7 @@ public:
     /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     /// @brief Get bus status as a stringCall bus element status callback
     /// @param busElemStatusCB - callback for bus element status changes
-    void callBusElemStatusCB(const std::vector<BusElemAddrAndStatus>& statusChanges)
+    void callBusElemStatusCB(const std::vector<BusAddrStatus>& statusChanges)
     {
         if (_busElemStatusCB)
             _busElemStatusCB(*this, statusChanges);
@@ -362,7 +376,16 @@ public:
         return _busStats;
     }
 
+    ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    /// @brief Get bus number
+    /// @return bus number
+    BusNumType getBusNum() const
+    {        
+        return _busNum;
+    }
+
 protected:
+    BusNumType _busNum = RaftDeviceID::BUS_NUM_FIRST_BUS;
     RaftBusStats _busStats;
     BusElemStatusCB _busElemStatusCB;
     BusOperationStatusCB _busOperationStatusCB;

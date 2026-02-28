@@ -13,7 +13,6 @@
 #include "RaftUtils.h"
 #include "RaftJsonPrefixed.h"
 #include "RaftJson.h"
-#include "esp_idf_version.h"
 
 class LEDStripConfig
 {
@@ -37,12 +36,12 @@ public:
         rmtResolutionHz = config.getLong("rmtHz", rmtResolutionHz);
 
         // LED speed parameters
-        bit0_0_ticks = config.getDouble("bit0_0Us", PIX_BIT_0_0_US_DEFAULT) * rmtResolutionHz / 1000000;
-        bit0_1_ticks = config.getDouble("bit0_1Us", PIX_BIT_0_1_US_DEFAULT) * rmtResolutionHz / 1000000;
-        bit1_0_ticks = config.getDouble("bit1_0Us", PIX_BIT_1_0_US_DEFAULT) * rmtResolutionHz / 1000000;
-        bit1_1_ticks = config.getDouble("bit1_1Us", PIX_BIT_1_1_US_DEFAULT) * rmtResolutionHz / 1000000;
-        reset_ticks = config.getDouble("resetUs", PIX_RESET_US_DEFAULT) * rmtResolutionHz / 1000000;
-
+        double rmtTicksPerUs = rmtResolutionHz / 1000000.0;
+        T0H_ticks = config.getDouble("T0H", config.getDouble("bit0_0Us", T0H_US_DEFAULT)) * rmtTicksPerUs;
+        T1H_ticks = config.getDouble("T1H", config.getDouble("bit1_0Us", T1H_US_DEFAULT)) * rmtTicksPerUs;
+        T0L_ticks = config.getDouble("T0L", config.getDouble("bit0_1Us", T0L_US_DEFAULT)) * rmtTicksPerUs;
+        T1L_ticks = config.getDouble("T1L", config.getDouble("bit1_1Us", T1L_US_DEFAULT)) * rmtTicksPerUs;
+        reset_ticks = config.getDouble("resetUs", RESET_US_DEFAULT) * rmtTicksPerUs;
         // MSB first
         msbFirst = config.getBool("msbFirst", msbFirst);
 
@@ -65,6 +64,11 @@ public:
         // Delay before deinit
         delayBeforeDeinitMs = config.getLong("beforeDeinitMs", 0);
 
+        // RMT peripheral configuration
+        memBlockSymbols = config.getLong("memBlockSymbols", 64);
+        transQueueDepth = config.getLong("transQueueDepth", 1);
+        minChunkSize = config.getLong("minChunkSize", 64);
+
         return true;
     }
 
@@ -80,9 +84,12 @@ public:
                     " offAftMs:" + String(powerOffAfterMs) +
                     " befDeinitMs:" + String(delayBeforeDeinitMs) +
                     " rmtHz:" + String(rmtResolutionHz) +
-                    " b0_0_tks:" + String(bit0_0_ticks) + " b0_1_tks:" + String(bit0_1_ticks) +
-                    " b1_0_tks:" + String(bit1_0_ticks) + " b1_1_tks:" + String(bit1_1_ticks) +
-                    " rst_tks:" + String(reset_ticks) + " msb1st:" + String(msbFirst);
+                    " T0Hticks:" + String(T0H_ticks) + " T0Lticks:" + String(T0L_ticks) +
+                    " T1Hticks:" + String(T1H_ticks) + " T1Lticks:" + String(T1L_ticks) +
+                    " rst_tks:" + String(reset_ticks) + " msb1st:" + String(msbFirst) +
+                    " memBlkSym:" + String(memBlockSymbols) +
+                    " transQDepth:" + String(transQueueDepth) +
+                    " minChunk:" + String(minChunkSize);
         return str;
     }
 
@@ -122,20 +129,27 @@ public:
     // Delay before deinit
     uint16_t delayBeforeDeinitMs = 0;
 
-    // Pixel comms
-    uint32_t rmtResolutionHz = 10000000;
-    static constexpr const double PIX_BIT_0_0_US_DEFAULT = 0.3;
-    static constexpr const double PIX_BIT_0_1_US_DEFAULT = 0.9;
-    static constexpr const double PIX_BIT_1_0_US_DEFAULT = 0.9; 
-    static constexpr const double PIX_BIT_1_1_US_DEFAULT = 0.3;
-    static constexpr const double PIX_RESET_US_DEFAULT = 50;
-    uint16_t bit0_0_ticks = PIX_BIT_0_0_US_DEFAULT * rmtResolutionHz / 1000000;
-    uint16_t bit0_1_ticks = PIX_BIT_0_1_US_DEFAULT * rmtResolutionHz / 1000000;
-    uint16_t bit1_0_ticks = PIX_BIT_1_0_US_DEFAULT * rmtResolutionHz / 1000000;
-    uint16_t bit1_1_ticks = PIX_BIT_1_1_US_DEFAULT * rmtResolutionHz / 1000000;
-    uint16_t reset_ticks = PIX_RESET_US_DEFAULT * rmtResolutionHz / 1000000;
+    // RMT peripheral configuration - for simple encoder implementations
+    uint16_t memBlockSymbols = 64;      // RMT memory block size (larger = less flicker)
+    uint16_t transQueueDepth = 1;       // Transaction queue depth (only 1 to prevent buffer corruption)
+    uint16_t minChunkSize = 64;         // Min chunk size for simple encoder
 
+    // Pixel comms - defaults are from WS2812B datasheet
+    // https://cdn-shop.adafruit.com/datasheets/WS2812B.pdf
+    static constexpr const double rmtResolutionMHz = 10.0;
+    static constexpr const double rmtTicksPerUs = rmtResolutionMHz;
+    static constexpr const double T0H_US_DEFAULT = 0.4;
+    static constexpr const double T1H_US_DEFAULT = 0.8;
+    static constexpr const double T0L_US_DEFAULT = 0.85; 
+    static constexpr const double T1L_US_DEFAULT = 0.45;
+    static constexpr const double RESET_US_DEFAULT = 100;
+    uint32_t rmtResolutionHz = rmtResolutionMHz * 1000000;
+    uint16_t T0H_ticks = T0H_US_DEFAULT * rmtTicksPerUs;
+    uint16_t T1H_ticks = T1H_US_DEFAULT * rmtTicksPerUs;
+    uint16_t T0L_ticks = T0L_US_DEFAULT * rmtTicksPerUs;
+    uint16_t T1L_ticks = T1L_US_DEFAULT * rmtTicksPerUs;
+    uint16_t reset_ticks = RESET_US_DEFAULT * rmtTicksPerUs;
     // Default and max num pixels
-    static const uint32_t MAX_NUM_PIXELS = 1000;    
+    static const uint32_t MAX_NUM_PIXELS = 2000;
     static const uint32_t DEFAULT_NUM_PIXELS = 60;
 };

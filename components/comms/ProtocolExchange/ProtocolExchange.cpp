@@ -7,6 +7,7 @@
 //
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+#include "RaftArduino.h"
 #include "Logger.h"
 #include "ProtocolExchange.h"
 #include "CommsChannelMsg.h"
@@ -15,7 +16,6 @@
 #include "ProtocolRICFrame.h"
 #include "ProtocolRICJSON.h"
 #include "RICRESTMsg.h"
-#include "SysManager.h"
 #include "RaftJson.h"
 #include "CommsBridgeMsg.h"
 
@@ -101,8 +101,8 @@ void ProtocolExchange::loop()
     bool isActive = isMainFWUpdate || isFileSystemActivity || isStreaming;
     if (_sysManStateIndWasActive != isActive)
     {
-        if (getSysManager())
-            getSysManager()->informOfFileStreamActivity(isMainFWUpdate, isFileSystemActivity, isStreaming);
+        if (_fileStreamActivityHookFn)
+            _fileStreamActivityHookFn(isMainFWUpdate, isFileSystemActivity, isStreaming);
         _sysManStateIndWasActive = isActive;
     }
 }
@@ -441,6 +441,13 @@ RaftRetCode ProtocolExchange::processRICRESTCmdFrame(RICRESTMsg& ricRESTReqMsg, 
             break;
         case FileStreamBase::FILE_STREAM_MSG_TYPE_UPLOAD_END:
             pSession = getFileStreamExistingSession(fileStreamName.c_str(), channelID, streamID);
+            // If session already cleaned up (e.g. after final block), respond OK
+            // so the client's numbered message gets acknowledged (avoiding timeout)
+            if (!pSession)
+            {
+                Raft::setJsonBoolResult(ricRESTReqMsg.getReq().c_str(), respMsg, true);
+                return RAFT_OK;
+            }
             break;
         case FileStreamBase::FILE_STREAM_MSG_TYPE_DOWNLOAD_START:
             pSession = getFileStreamNewSession(fileStreamName.c_str(), channelID, fileStreamContentType, 

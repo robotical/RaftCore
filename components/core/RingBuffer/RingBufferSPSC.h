@@ -1,7 +1,7 @@
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //
-// RingBufferRTOS
-// Template-based ring bufffer
+// RingBufferSPSC
+// Template-based single-producer/single-consumer ring bufffer
 //
 // Rob Dobson 2012-2023
 //
@@ -10,13 +10,13 @@
 #pragma once
 
 #include <vector>
-#include "RingBufferPosnRTOS.h"
+#include "RingBufferPosn.h"
 
 template<typename ElemT, uint32_t bufferSize>
-class RingBufferRTOS
+class RingBufferSPSC
 {
 public:
-    RingBufferRTOS() :
+    RingBufferSPSC() :
         _bufPos(bufferSize)
     {
     }
@@ -61,6 +61,6 @@ public:
     }
 
 private:
-    RingBufferPosnRTOS _bufPos;
+    RingBufferPosn _bufPos;
     ElemT _buffer[bufferSize];
 };

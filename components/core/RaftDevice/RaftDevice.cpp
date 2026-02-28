@@ -8,24 +8,31 @@
 
 #include "RaftDevice.h"
 #include "RaftUtils.h"
+#include "RaftBusSystem.h"
 
 // #define DEBUG_RAFT_DEVICE_CONSTRUCTOR
 // #define DEBUG_BINARY_DEVICE_DATA 
 
 /// @brief Construct a new Raft Device object
+/// @param pClassName Class name of the device
 /// @param pDevConfigJson JSON configuration for the device
-RaftDevice::RaftDevice(const char* pClassName, const char* pDevConfigJson) :
-        deviceConfig(pDevConfigJson), deviceClassName(pClassName)
+/// @param deviceID Device ID of the device
+RaftDevice::RaftDevice(const char* pClassName, const char* pDevConfigJson, RaftDeviceID deviceID) :
+        deviceConfig(pDevConfigJson), 
+#ifdef DEBUG_INCLUDE_RAFT_DEVICE_CLASS_NAME
+        deviceClassName(pClassName), 
+#endif
+        _deviceID(deviceID)
 {
-    // Device name
-    deviceName = deviceConfig.getString("name", "UNKNOWN");
+    // Configured device name 
+    configuredDeviceName = deviceConfig.getString("name", "");
 
     // Init publish device type (default to class name)
-    publishDeviceType = deviceConfig.getString("type", pClassName);
-    
+    configuredDeviceType = deviceConfig.getString("type", pClassName);
+
 #ifdef DEBUG_RAFT_DEVICE_CONSTRUCTOR
-    LOG_I(MODULE_PREFIX, "RaftDevice class %s publishDeviceType %s devConfig %s", 
-            pClassName, publishDeviceType.c_str(), pDevConfigJson);
+    LOG_I(MODULE_PREFIX, "RaftDevice class %s configuredDeviceType %s devConfig %s", 
+            pClassName, configuredDeviceType.c_str(), pDevConfigJson);
 #endif
 }
 
@@ -86,17 +93,17 @@ std::vector<uint8_t> RaftDevice::getStatusBinary() const
 
 /// @brief Generate a binary data message
 /// @param binData (out) Binary data
-/// @param connMode Connection mode (inc bus number / id)
+/// @param busNumber Bus number (0-63)
 /// @param address Address of the device
 /// @param deviceTypeIndex Index of the device type
-/// @param isOnline true if the device is online
+/// @param onlineState Device online state
 /// @param deviceMsgData Device msg data
 /// @return true if created ok
 bool RaftDevice::genBinaryDataMsg(std::vector<uint8_t>& binData, 
-    uint8_t connMode, 
+    uint8_t busNumber, 
     BusElemAddrType address, 
     uint16_t deviceTypeIndex, 
-    bool isOnline, 
+    DeviceOnlineState onlineState, 
     std::vector<uint8_t> deviceMsgData)
     {
         // Reserve space
@@ -108,8 +115,10 @@ bool RaftDevice::genBinaryDataMsg(std::vector<uint8_t>& binData,
         binData.push_back((msgLen >> 8) & 0xff);
         binData.push_back(msgLen & 0xff);
 
-        // Start with connection mode byte (MSB indicates online/offline)
-        binData.push_back(connMode | (isOnline ? 0x80 : 0));
+        // Status/bus byte: bit7=online, bit6=pendingDeletion, bits0-3=busNumber
+        bool isOnline = (onlineState == DeviceOnlineState::ONLINE);
+        bool isPendingDeletion = (onlineState == DeviceOnlineState::PENDING_DELETION);
+        binData.push_back((busNumber & 0x0F) | (isOnline ? 0x80 : 0) | (isPendingDeletion ? 0x40 : 0));
 
         // The address (32 bits)
         binData.push_back((address >> 24) & 0xff);
@@ -175,20 +184,23 @@ String RaftDevice::getDataJSON(RaftDeviceJSONLevel level) const
     return "{}";
 }
 
-/// @brief Get named value from the device
-/// @param pParam Parameter name
-/// @param isFresh (out) true if the value is fresh
-/// @return double value
-double RaftDevice::getNamedValue(const char* pParam, bool& isFresh) const
-{
-    isFresh = false;
-    return 0.0;
-}
-
 /// @brief Check if device has capability
 /// @param pCapabilityStr capability string
 /// @return true if the device has the capability
 bool RaftDevice::hasCapability(const char* pCapabilityStr) const
 {
     return false;
+}
+
+/// @brief Register for device data notifications
+/// @param dataChangeCB Callback for data change
+/// @param minTimeBetweenReportsMs Minimum time between reports (ms)
+/// @param pCallbackInfo Callback info (passed to the callback)
+void RaftDevice::registerForDeviceData(RaftDeviceDataChangeCB dataChangeCB, uint32_t minTimeBetweenReportsMs, const void* pCallbackInfo)
+{
+    // Register with the bus system
+    RaftBus* pBus = raftBusSystem.getBusByNumber(_deviceID.getBusNum());
+    RaftBusDevicesIF* pBusDevicesIF = pBus->getBusDevicesIF();
+    if (pBusDevicesIF)
+        pBusDevicesIF->registerForDeviceData(_deviceID.getAddress(), dataChangeCB, minTimeBetweenReportsMs, pCallbackInfo);
 }

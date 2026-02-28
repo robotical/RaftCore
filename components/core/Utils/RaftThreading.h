@@ -21,6 +21,10 @@ extern "C" {
 #include <stdint.h>
 #include <stdbool.h>
 
+// Platform-independent mutex timeout constant
+// Use this value to wait indefinitely for a mutex lock
+static const uint32_t RAFT_MUTEX_WAIT_FOREVER = 0xFFFFFFFF;
+
 // Platform-independent thread handle and mutex definitions
 #if defined(MICROPY_PY_THREAD)
 
@@ -92,6 +96,7 @@ extern "C" {
 #elif defined(__linux__)
 
     // Linux platform using pthread
+    #include <cstddef>
     #include <pthread.h>
     #include <semaphore.h>
     #include <time.h>
@@ -108,7 +113,7 @@ extern "C" {
     void RaftMutex_destroy(RaftMutex &mutex);
 
     // Thread handle
-    static const pthread_t RAFT_THREAD_HANDLE_INVALID = nullptr;
+    static const pthread_t RAFT_THREAD_HANDLE_INVALID = 0;
     typedef pthread_t RaftThreadHandle;
 
     // Thread functions
@@ -129,6 +134,54 @@ extern "C" {
 
 #endif
 
+
+#ifdef __cplusplus
+}
+#endif
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Platform-independent atomics
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// Memory ordering for atomic operations
+typedef enum {
+    RAFT_ATOMIC_RELAXED,  // No synchronization or ordering constraints
+    RAFT_ATOMIC_ACQUIRE,  // Prevents memory reordering of subsequent reads/writes before this load
+    RAFT_ATOMIC_RELEASE,  // Prevents memory reordering of prior reads/writes after this store
+    RAFT_ATOMIC_SEQ_CST   // Full sequential consistency (acquire + release + total order)
+} RaftAtomicOrdering;
+
+// Platform-independent atomic bool
+// Simple wrapper that provides atomic bool operations across platforms
+typedef struct {
+    volatile uint32_t value;
+} RaftAtomicBool;
+
+// Platform-independent atomic uint32
+// Provides lock-free atomic operations for SPSC ring buffers
+typedef struct {
+    volatile uint32_t value;
+} RaftAtomicUint32;
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// Atomic bool functions
+void RaftAtomicBool_init(RaftAtomicBool &atomic, bool initialValue);
+void RaftAtomicBool_set(RaftAtomicBool &atomic, bool value);
+bool RaftAtomicBool_get(const RaftAtomicBool &atomic);
+
+// Atomic uint32 functions
+void RaftAtomicUint32_init(RaftAtomicUint32 &atomic, uint32_t initialValue);
+
+#if defined(FREERTOS_CONFIG_H) || defined(FREERTOS_H) || defined(ESP_PLATFORM)
+void IRAM_ATTR RaftAtomicUint32_store(RaftAtomicUint32 &atomic, uint32_t value, RaftAtomicOrdering ordering);
+uint32_t IRAM_ATTR RaftAtomicUint32_load(const RaftAtomicUint32 &atomic, RaftAtomicOrdering ordering);
+#else
+void RaftAtomicUint32_store(RaftAtomicUint32 &atomic, uint32_t value, RaftAtomicOrdering ordering);
+uint32_t RaftAtomicUint32_load(const RaftAtomicUint32 &atomic, RaftAtomicOrdering ordering);
+#endif
 
 #ifdef __cplusplus
 }

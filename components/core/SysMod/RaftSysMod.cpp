@@ -8,16 +8,19 @@
 
 #include "Logger.h"
 #include "RaftSysMod.h"
-#include "SysManager.h"
-#include "ConfigPinMap.h"
+#include "SysManagerIF.h"
 #include "CommsCoreIF.h"
+#include "DeviceManager.h"
 
-SysManager* RaftSysMod::_pSysManager = NULL;
+SysManagerIF* RaftSysMod::_pSysManager = NULL;
 
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// Constructor
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/// @brief Constructor
+/// @param pModuleName Module name
+/// @param sysConfig System configuration interface
+/// @param pConfigPrefix Configuration prefix
+/// @param pMutableConfigNamespace Mutable configuration namespace
+/// @param pMutableConfigPrefix Mutable configuration prefix
 RaftSysMod::RaftSysMod(const char *pModuleName, 
             RaftJsonIF& sysConfig,
             const char* pConfigPrefix, 
@@ -39,36 +42,53 @@ RaftSysMod::RaftSysMod(const char *pModuleName,
         _pSysManager->addManagedSysMod(this);
 }
 
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/// @brief Destructor
 RaftSysMod::~RaftSysMod()
 {
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// Helpers
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
+/// @brief Get system name
+/// @return System name
 String RaftSysMod::getSystemName()
 {
+    bool isValid = false;
     if (_pSysManager)
-        return _pSysManager->getSystemName();
+        return _pSysManager->getNamedString(nullptr, "SystemName", isValid);
     return "";
 }
 
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/// @brief Get system unique string
+/// @return System unique string
 String RaftSysMod::getSystemUniqueString()
 {
+    bool isValid = false;
     if (_pSysManager)
-        return _pSysManager->getSystemUniqueString();
+        return _pSysManager->getNamedString(nullptr, "SystemUniqueString", isValid);
     return "";
 }
 
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/// @brief Get friendly name
+/// @param isSet (out) true if friendly name is set
+/// @return Friendly name
 String RaftSysMod::getFriendlyName(bool& isSet)
 {
+    bool isValid = false;
     if (_pSysManager)
-        return _pSysManager->getFriendlyName(isSet);
+    {
+        isSet = _pSysManager->getNamedValue(nullptr, "FriendlyNameIsSet", isValid) != 0.0;
+        return _pSysManager->getNamedString(nullptr, "FriendlyName", isValid);
+    }
     isSet = false;
     return "";
 }
 
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/// @brief Get REST API endpoint manager
+/// @return Pointer to RestAPIEndpointManager
 RestAPIEndpointManager* RaftSysMod::getRestAPIEndpointManager()
 {
     // Check parent
@@ -79,7 +99,9 @@ RestAPIEndpointManager* RaftSysMod::getRestAPIEndpointManager()
     return _pSysManager->getRestAPIEndpointManager();
 }
 
-// Get CommsCore
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/// @brief Get CommsCore interface
+/// @return Pointer to CommsCoreIF
 CommsCoreIF* RaftSysMod::getCommsCore()
 {
     // Check parent
@@ -88,6 +110,13 @@ CommsCoreIF* RaftSysMod::getCommsCore()
 
     // Get CommsCore
     return _pSysManager->getCommsCore();
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/// @brief Configuration access methods
+int RaftSysMod::configGetInt(const char *dataPath, int defaultValue)
+{
+    return config.getInt(dataPath, defaultValue);
 }
 
 long RaftSysMod::configGetLong(const char *dataPath, long defaultValue)
@@ -130,18 +159,18 @@ void RaftSysMod::configRegisterChangeCallback(RaftJsonChangeCallbackType configC
     config.registerChangeCallback(configChangeCallback);
 }
 
-int RaftSysMod::configGetPin(const char* dataPath, const char* defaultValue)
-{
-    String pinName = configGetString(dataPath, defaultValue);
-    return ConfigPinMap::getPinFromName(pinName.c_str());
-}
-
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/// @brief Save config data from JSON string
+/// @param configStr JSON string
 void RaftSysMod::configSaveData(const String& configStr)
 {
     config.setJsonDoc(configStr.c_str());
 }
 
-// Get JSON status of another SysMod
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/// @brief Get JSON status string from another SysMod
+/// @param sysModName Name of SysMod
+/// @return JSON status string
 String RaftSysMod::sysModGetStatusJSON(const char* sysModName) const
 {
     if (_pSysManager)
@@ -149,7 +178,11 @@ String RaftSysMod::sysModGetStatusJSON(const char* sysModName) const
     return "{\"rslt\":\"fail\"}";
 }
 
-// Post JSON command to another SysMod
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/// @brief Send JSON command to another SysMod
+/// @param sysModName Name of SysMod
+/// @param jsonCmd JSON command
+/// @return RaftRetCode
 RaftRetCode RaftSysMod::sysModSendCmdJSON(const char* sysModName, const char* jsonCmd)
 {
     if (_pSysManager)
@@ -157,8 +190,13 @@ RaftRetCode RaftSysMod::sysModSendCmdJSON(const char* sysModName, const char* js
     return RAFT_INVALID_OPERATION;
 }
 
-// SysMod get named value
-double RaftSysMod::sysModGetNamedValue(const char* sysModName, const char* valueName, bool& isValid)
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/// @brief Get named value from another SysMod
+/// @param sysModName Name of SysMod
+/// @param valueName Name of value
+/// @param isValid (out) true if value is valid
+/// @return Named value
+double RaftSysMod::sysModGetNamedValue(const char* sysModName, const char* valueName, bool& isValid) const
 {
     if (_pSysManager)
         return _pSysManager->getNamedValue(sysModName, valueName, isValid);
@@ -166,14 +204,33 @@ double RaftSysMod::sysModGetNamedValue(const char* sysModName, const char* value
     return 0;
 }
 
-// Add status change callback on a SysMod
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/// @brief Get named string from another SysMod
+/// @param pSysModName Name of the SysMod
+/// @param valueName String name
+/// @param isValid (out) true if value is valid
+/// @return string
+String RaftSysMod::sysModGetNamedString(const char* pSysModName, const char* valueName, bool& isValid) const
+{
+    if (_pSysManager)
+        return _pSysManager->getNamedString(pSysModName, valueName, isValid);
+    isValid = false;
+    return "";
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/// @brief Set the status change callback for a SysMod
+/// @param sysModName Name of SysMod
+/// @param statusChangeCB Callback function
 void RaftSysMod::sysModSetStatusChangeCB(const char* sysModName, SysMod_statusChangeCB statusChangeCB)
 {
     if (_pSysManager)
         _pSysManager->setStatusChangeCB(sysModName, statusChangeCB);
 }
 
-// Execute status change callbacks
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/// @brief Execute status change callbacks
+/// @param changeToOn true if changing to online
 void RaftSysMod::executeStatusChangeCBs(bool changeToOn)
 {
     for (SysMod_statusChangeCB& statusChangeCB : _statusChangeCBs)
@@ -183,6 +240,9 @@ void RaftSysMod::executeStatusChangeCBs(bool changeToOn)
     }
 }
 
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/// @brief Get SysManager statistics
+/// @return Pointer to SupervisorStats
 SupervisorStats* RaftSysMod::getSysManagerStats()
 {
     if (_pSysManager)
@@ -190,26 +250,35 @@ SupervisorStats* RaftSysMod::getSysManagerStats()
     return nullptr;
 }
 
-// File/stream system activity - main firmware update
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/// @brief Check if system main firmware update is in progress
+/// @return true if main firmware update in progress
 bool RaftSysMod::isSystemMainFWUpdate()
 {
-    if (getSysManager())
-        return getSysManager()->isSystemMainFWUpdate();
+    bool isValid;
+    if (_pSysManager)
+        return _pSysManager->getNamedValue(nullptr, "IsSystemMainFWUpdate", isValid) != 0.0;
     return false;
 }
 
-// File/stream system activity - file transfer
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/// @brief Check if system file transfer is in progress
+/// @return true if file transfer in progress
 bool RaftSysMod::isSystemFileTransferring()
 {
-    if (getSysManager())
-        return getSysManager()->isSystemFileTransferring();
+    bool isValid = false;
+    if (_pSysManager)
+        return _pSysManager->getNamedValue(nullptr, "IsSystemFileTransferring", isValid) != 0.0;
     return false;
 }
 
-// File/stream system activity - streaming
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/// @brief Check if system streaming is in progress
+/// @return true if streaming in progress
 bool RaftSysMod::isSystemStreaming()
 {
-    if (getSysManager())
-        return getSysManager()->isSystemStreaming();
+    bool isValid = false;
+    if (_pSysManager)
+        return _pSysManager->getNamedValue(nullptr, "IsSystemStreaming", isValid) != 0.0;
     return false;
 }

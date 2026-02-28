@@ -31,7 +31,10 @@ static const uint32_t BASE_DEV_TYPE_ARRAY_SIZE = sizeof(baseDevTypeRecords) / si
 DeviceTypeRecords::DeviceTypeRecords()
 {
     // Create mutex
-    _extDeviceTypeRecordsMutex = xSemaphoreCreateMutex();
+    RaftMutex_init(_extDeviceTypeRecordsMutex);
+
+    // Initialize atomic bool
+    RaftAtomicBool_init(_extendedRecordsAdded, false);
 
     // Reserve space for extended device type records (to avoid changing absolute pointer values)
     _extendedDevTypeRecords.reserve(MAX_EXTENDED_DEV_TYPE_RECORDS);
@@ -39,27 +42,28 @@ DeviceTypeRecords::DeviceTypeRecords()
 
 DeviceTypeRecords::~DeviceTypeRecords()
 {
-    // TODO - delete mutex
+    // Delete mutex
+    RaftMutex_destroy(_extDeviceTypeRecordsMutex);
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 /// @brief get device types (strings) for an address
 /// @param addr address
 /// @returns device type indexes (into generated baseDevTypeRecords array) that match the address
-std::vector<uint16_t> DeviceTypeRecords::getDeviceTypeIdxsForAddr(BusElemAddrType addr) const
+std::vector<DeviceTypeIndexType> DeviceTypeRecords::getDeviceTypeIdxsForAddr(BusElemAddrType addr) const
 {
 #ifdef DEBUG_DEVICE_INFO_PERFORMANCE
     uint64_t startTimeUs = micros();
 #endif
 
     // Return value
-    std::vector<uint16_t> devTypeIdxsForAddr;
+    std::vector<DeviceTypeIndexType> devTypeIdxsForAddr;
 
     // Check if any of the extended device type records match
-    if (_extendedRecordsAdded && (xSemaphoreTake(_extDeviceTypeRecordsMutex, portMAX_DELAY) == pdTRUE))
+    if (RaftAtomicBool_get(_extendedRecordsAdded) && RaftMutex_lock(_extDeviceTypeRecordsMutex, RAFT_MUTEX_WAIT_FOREVER))
     {
         // Ext devType indices continue on from the base devType indices
-        uint16_t devTypeIdx = BASE_DEV_TYPE_ARRAY_SIZE;
+        DeviceTypeIndexType devTypeIdx = BASE_DEV_TYPE_ARRAY_SIZE;
         for (const auto& extDevTypeRec : _extendedDevTypeRecords)
         {
             std::vector<int> addressList;
@@ -74,7 +78,7 @@ std::vector<uint16_t> DeviceTypeRecords::getDeviceTypeIdxsForAddr(BusElemAddrTyp
             }
             devTypeIdx++;
         }
-        xSemaphoreGive(_extDeviceTypeRecordsMutex);
+        RaftMutex_unlock(_extDeviceTypeRecordsMutex);
     }
 
     // Check valid
@@ -110,19 +114,19 @@ std::vector<uint16_t> DeviceTypeRecords::getDeviceTypeIdxsForAddr(BusElemAddrTyp
 /// @param deviceTypeIdx device type index
 /// @param devTypeRec (out) device type record
 /// @return true if device type found
-bool DeviceTypeRecords::getDeviceInfo(uint16_t deviceTypeIdx, DeviceTypeRecord& devTypeRec) const
+bool DeviceTypeRecords::getDeviceInfo(DeviceTypeIndexType deviceTypeIdx, DeviceTypeRecord& devTypeRec) const
 {
     // Check if in range
     bool isValid = false;
     if (deviceTypeIdx >= BASE_DEV_TYPE_ARRAY_SIZE)
     {
         // Check extended device type records
-        if (_extendedRecordsAdded && (xSemaphoreTake(_extDeviceTypeRecordsMutex, portMAX_DELAY) == pdTRUE))
+        if (RaftAtomicBool_get(_extendedRecordsAdded) && RaftMutex_lock(_extDeviceTypeRecordsMutex, RAFT_MUTEX_WAIT_FOREVER))
         {
             const uint32_t extDevTypeIdx = deviceTypeIdx - BASE_DEV_TYPE_ARRAY_SIZE;
             if (extDevTypeIdx < _extendedDevTypeRecords.size())
                 isValid = _extendedDevTypeRecords[extDevTypeIdx].getDeviceTypeRecord(devTypeRec);
-            xSemaphoreGive(_extDeviceTypeRecordsMutex);
+            RaftMutex_unlock(_extDeviceTypeRecordsMutex);
         }
     }
     else
@@ -144,12 +148,12 @@ bool DeviceTypeRecords::getDeviceInfo(uint16_t deviceTypeIdx, DeviceTypeRecord& 
 /// @param devTypeRec (out) device type record
 /// @param deviceTypeIdx (out) device type index
 /// @return true if device type found
-bool DeviceTypeRecords::getDeviceInfo(const String& deviceTypeName, DeviceTypeRecord& devTypeRec, uint32_t& deviceTypeIdx) const
+bool DeviceTypeRecords::getDeviceInfo(const String& deviceTypeName, DeviceTypeRecord& devTypeRec, DeviceTypeIndexType& deviceTypeIdx) const
 {
     // Iterate the extended device types first - so that device type names can be overridden
     bool isValid = false;
     uint32_t typeIdx = BASE_DEV_TYPE_ARRAY_SIZE;
-    if (_extendedRecordsAdded && (xSemaphoreTake(_extDeviceTypeRecordsMutex, portMAX_DELAY) == pdTRUE))
+    if (RaftAtomicBool_get(_extendedRecordsAdded) && RaftMutex_lock(_extDeviceTypeRecordsMutex, RAFT_MUTEX_WAIT_FOREVER))
     {
         for (const auto& extDevTypeRec : _extendedDevTypeRecords)
         {
@@ -161,7 +165,7 @@ bool DeviceTypeRecords::getDeviceInfo(const String& deviceTypeName, DeviceTypeRe
             }
             typeIdx++;
         }
-        xSemaphoreGive(_extDeviceTypeRecordsMutex);
+        RaftMutex_unlock(_extDeviceTypeRecordsMutex);
     }
 
     // Iterate the device types
@@ -547,24 +551,18 @@ void DeviceTypeRecords::getDetectionRecs(const DeviceTypeRecord* pDevTypeRec, st
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 /// @brief Convert poll response to JSON
 /// @param addr address
-/// @param isOnline true if device is online
-/// @param pDevTypeRec pointer to device type record
+/// @param onlineState device online state
+/// @param deviceTypeIndex device type index
 /// @param devicePollResponseData device poll response data
-String DeviceTypeRecords::deviceStatusToJson(BusElemAddrType addr, bool isOnline, const DeviceTypeRecord* pDevTypeRec, 
-        const std::vector<uint8_t>& devicePollResponseData) const
+String DeviceTypeRecords::deviceStatusToJson(BusElemAddrType addr, DeviceOnlineState onlineState,  DeviceTypeIndexType deviceTypeIndex, 
+        const std::vector<uint8_t>& devicePollResponseData)
 {
-    if (devicePollResponseData.size() == 0)
-    {
-        // No data to report
-        return "";
-    }
-    
-    // Device type name
-    String devTypeName = pDevTypeRec ? pDevTypeRec->deviceType : "";
     // Form a hex buffer
     String hexOut;
+    hexOut.reserve(hexOut.length() + 50);
     Raft::getHexStrFromBytes(devicePollResponseData.data(), devicePollResponseData.size(), hexOut);
-    return "\"" + String(addr, 16) + "\":{\"x\":\"" + hexOut + "\",\"_o\":" + String(isOnline ? "1" : "0") + ",\"_t\":\"" + devTypeName + "\"}";
+    uint32_t publishValueForOnlineState = onlineState == DeviceOnlineState::ONLINE ? 1 : (onlineState == DeviceOnlineState::PENDING_DELETION ? 2 : 0);
+    return "\"" + String(addr, 16) + "\":{\"x\":\"" + hexOut + "\",\"_o\":" + String(publishValueForOnlineState) + ",\"_i\":" + String(deviceTypeIndex) + "}";
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -572,7 +570,7 @@ String DeviceTypeRecords::deviceStatusToJson(BusElemAddrType addr, bool isOnline
 /// @param deviceTypeIdx device type index
 /// @param includePlugAndPlayInfo include plug and play info
 /// @return JSON string
-String DeviceTypeRecords::getDevTypeInfoJsonByTypeIdx(uint16_t deviceTypeIdx, bool includePlugAndPlayInfo) const
+String DeviceTypeRecords::getDevTypeInfoJsonByTypeIdx(DeviceTypeIndexType deviceTypeIdx, bool includePlugAndPlayInfo) const
 {
     // Get device type record
     DeviceTypeRecord devTypeRec;
@@ -585,12 +583,12 @@ String DeviceTypeRecords::getDevTypeInfoJsonByTypeIdx(uint16_t deviceTypeIdx, bo
 /// @brief Get device type info JSON by device type name
 /// @param deviceTypeName device type name
 /// @param includePlugAndPlayInfo include plug and play info
+/// @param deviceTypeIdx (out) device type index
 /// @return JSON string
-String DeviceTypeRecords::getDevTypeInfoJsonByTypeName(const String& deviceTypeName, bool includePlugAndPlayInfo) const
+String DeviceTypeRecords::getDevTypeInfoJsonByTypeName(const String& deviceTypeName, bool includePlugAndPlayInfo, DeviceTypeIndexType& deviceTypeIdx) const
 {
     // Get the device type info
     DeviceTypeRecord devTypeRec;
-    uint32_t deviceTypeIdx = 0;
     if (getDeviceInfo(deviceTypeName, devTypeRec, deviceTypeIdx))
         return devTypeRec.getJson(includePlugAndPlayInfo);
     return "{}";
@@ -615,7 +613,7 @@ void DeviceTypeRecords::getScanPriorityLists(std::vector<std::vector<BusElemAddr
     }
 
     // Add any extended device type record addresses to the highest priority list
-    if (_extendedRecordsAdded && (xSemaphoreTake(_extDeviceTypeRecordsMutex, portMAX_DELAY) == pdTRUE))
+    if (RaftAtomicBool_get(_extendedRecordsAdded) && RaftMutex_lock(_extDeviceTypeRecordsMutex, RAFT_MUTEX_WAIT_FOREVER))
     {
         for (const auto& extDevTypeRec : _extendedDevTypeRecords)
         {
@@ -628,7 +626,7 @@ void DeviceTypeRecords::getScanPriorityLists(std::vector<std::vector<BusElemAddr
                 priorityLists[0].push_back(devAddr);
             }
         }
-        xSemaphoreGive(_extDeviceTypeRecordsMutex);
+        RaftMutex_unlock(_extDeviceTypeRecordsMutex);
     }
 }
 
@@ -637,16 +635,16 @@ void DeviceTypeRecords::getScanPriorityLists(std::vector<std::vector<BusElemAddr
 /// @param devTypeRec device type record
 /// @param deviceTypeIndex (out) device type index
 /// @return true if added
-bool DeviceTypeRecords::addExtendedDeviceTypeRecord(const DeviceTypeRecordDynamic& devTypeRec, uint16_t& deviceTypeIndex)
+bool DeviceTypeRecords::addExtendedDeviceTypeRecord(const DeviceTypeRecordDynamic& devTypeRec, DeviceTypeIndexType& deviceTypeIndex)
 {
     // Lock
-    if (!xSemaphoreTake(_extDeviceTypeRecordsMutex, portMAX_DELAY))
+    if (!RaftMutex_lock(_extDeviceTypeRecordsMutex, RAFT_MUTEX_WAIT_FOREVER))
         return false;
 
     // Check if max number of records reached
     if (_extendedDevTypeRecords.size() >= MAX_EXTENDED_DEV_TYPE_RECORDS)
     {
-        xSemaphoreGive(_extDeviceTypeRecordsMutex);
+        RaftMutex_unlock(_extDeviceTypeRecordsMutex);
 #ifdef DEBUG_ADD_EXTENDED_DEVICE_TYPE_RECORD
         LOG_W(MODULE_PREFIX, "addExtendedDeviceTypeRecord MAX_EXTENDED_DEV_TYPE_RECORDS reached");
 #endif
@@ -669,12 +667,12 @@ bool DeviceTypeRecords::addExtendedDeviceTypeRecord(const DeviceTypeRecordDynami
     if (!recFound)
     {
         _extendedDevTypeRecords.push_back(devTypeRec);
-        _extendedRecordsAdded = true;
+        RaftAtomicBool_set(_extendedRecordsAdded, true);
         deviceTypeIndex = _extendedDevTypeRecords.size() - 1 + BASE_DEV_TYPE_ARRAY_SIZE;
     }
 
     // Unlock
-    xSemaphoreGive(_extDeviceTypeRecordsMutex);
+    RaftMutex_unlock(_extDeviceTypeRecordsMutex);
 
 #ifdef DEBUG_ADD_EXTENDED_DEVICE_TYPE_RECORD
     LOG_I(MODULE_PREFIX, "addExtendedDeviceTypeRecord %s type %s devTypeIdx %d addrs %s detVals %s initVals %s pollInfo %s",
@@ -691,7 +689,7 @@ bool DeviceTypeRecords::addExtendedDeviceTypeRecord(const DeviceTypeRecordDynami
 /// @brief Get device poll decode function
 /// @param deviceTypeIdx device type index
 /// @return poll decode function
-DeviceTypeRecordDecodeFn DeviceTypeRecords::getPollDecodeFn(uint16_t deviceTypeIdx) const
+DeviceTypeRecordDecodeFn DeviceTypeRecords::getPollDecodeFn(DeviceTypeIndexType deviceTypeIdx) const
 {
 
     // TODO - see if copying can be avoided

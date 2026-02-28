@@ -12,7 +12,7 @@
 #include "esp_idf_version.h"
 #include "driver/gpio.h"
 
-#define DEBUG_ESP32RMTLEDSTRIP_SETUP
+// #define DEBUG_ESP32RMTLEDSTRIP_SETUP
 // #define DEBUG_ESP32RMTLEDSTRIP_SEND
 // #define DEBUG_ESP32RMTLEDSTRIP_DEINIT_AFTER_TX
 // #define DEBUG_ESP32RMTLEDSTRIP_INIT_RMT
@@ -24,11 +24,16 @@
 
 ESP32RMTLedStrip::ESP32RMTLedStrip()
 {
+    RaftMutex_init(_stateMutex);
+    RaftAtomicBool_init(_txInProgress, false);
 }
 
 ESP32RMTLedStrip::~ESP32RMTLedStrip()
 {
     deinitRMTPeripheral();
+
+    // Destroy mutex
+    RaftMutex_destroy(_stateMutex);
 
     // Clear power pin if used
     if (_ledStripConfig.powerPin >= 0)
@@ -70,8 +75,9 @@ bool ESP32RMTLedStrip::setup(const LEDStripConfig& config, uint32_t pixelIndexSt
         .gpio_num = (gpio_num_t)config.ledDataPin,          // LED strip data pin
         .clk_src = RMT_CLK_SRC_DEFAULT,                     // Default clock
         .resolution_hz = config.rmtResolutionHz,
-        .mem_block_symbols = 64,                            // Increase to reduce flickering
-        .trans_queue_depth = 4,                             // Number of transactions that can be pending in the background
+        .mem_block_symbols = config.memBlockSymbols,        // Increase to reduce flickering
+        .trans_queue_depth = config.transQueueDepth,        // Generally we only want one transaction at a time 
+                                                            // (queueing without data buffering could cause corruption)
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 2, 0)
         .intr_priority = 0,                                  // Interrupt priority
         .flags = {
@@ -80,11 +86,14 @@ bool ESP32RMTLedStrip::setup(const LEDStripConfig& config, uint32_t pixelIndexSt
             .io_loop_back = false,                          // No loop
             .io_od_mode = false,                            // Not open drain
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 4, 0)
-            .allow_pd = config.allowPowerDown,                                  // Allow power down (save context to RAM)
+            .allow_pd = config.allowPowerDown,              // Allow power down (save context to RAM)
+#endif
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 5, 0)
+            .init_level = false,                            // Initial level 
 #endif
         },
 #else
-        .intr_priority = 0,                                  // Interrupt priority
+        .intr_priority = 0,                                 // Interrupt priority
         .flags = {
             .invert_out = false,                            // Invert output
             .with_dma = false,                              // No DMA
@@ -96,10 +105,10 @@ bool ESP32RMTLedStrip::setup(const LEDStripConfig& config, uint32_t pixelIndexSt
 
     _ledStripEncoderConfig = {
         .resolution = config.rmtResolutionHz,
-        .bit0_0_ticks = config.bit0_0_ticks,
-        .bit0_1_ticks = config.bit0_1_ticks,
-        .bit1_0_ticks = config.bit1_0_ticks,
-        .bit1_1_ticks = config.bit1_1_ticks,
+        .T0H_ticks = config.T0H_ticks,
+        .T0L_ticks = config.T0L_ticks,
+        .T1H_ticks = config.T1H_ticks,
+        .T1L_ticks = config.T1L_ticks,
         .reset_ticks = config.reset_ticks, 
         .msbFirst = config.msbFirst,
     };
@@ -120,7 +129,7 @@ bool ESP32RMTLedStrip::setup(const LEDStripConfig& config, uint32_t pixelIndexSt
 void ESP32RMTLedStrip::loop()
 {
     // Check for de-init
-    if (_isSetup && _isInit && _ledStripConfig.stopAfterTx && !_txInProgress && Raft::isTimeout(millis(), _lastTxTimeMs, STOP_AFTER_TX_TIME_MS))
+    if (_isSetup && _isInit && _ledStripConfig.stopAfterTx && !RaftAtomicBool_get(_txInProgress) && Raft::isTimeout(millis(), _lastTxTimeMs, STOP_AFTER_TX_TIME_MS))
     {
 #ifdef DEBUG_ESP32RMTLEDSTRIP_DEINIT_AFTER_TX
         LOG_I(MODULE_PREFIX, "loop deinitRMTPeripheral");
@@ -153,8 +162,12 @@ void ESP32RMTLedStrip::loop()
 /// @brief Initialization of RMT TX peripheral
 bool ESP32RMTLedStrip::initRMTPeripheral()
 {
-    // Check if busy
-    if (_isInit || _txInProgress)
+    // Check if busy (with mutex protection)
+    RaftMutex_lock(_stateMutex, RAFT_MUTEX_WAIT_FOREVER);
+    bool isBusy = _isInit || RaftAtomicBool_get(_txInProgress);
+    RaftMutex_unlock(_stateMutex);
+    
+    if (isBusy)
     {
         LOG_E(MODULE_PREFIX, "initRMT FAIL reinit|busy");
         return false;
@@ -177,7 +190,7 @@ bool ESP32RMTLedStrip::initRMTPeripheral()
 
     // Setup callback on completion
     _lastTxTimeMs = millis();
-    _txInProgress = false;
+    RaftAtomicBool_set(_txInProgress, false);
     rmt_tx_event_callbacks_t cbs = {
         .on_trans_done = rmtTxCompleteCBStatic,
     };
@@ -212,6 +225,7 @@ bool ESP32RMTLedStrip::initRMTPeripheral()
 
 void ESP32RMTLedStrip::deinitRMTPeripheral()
 {
+    RaftMutex_lock(_stateMutex, RAFT_MUTEX_WAIT_FOREVER);
     if (_rmtChannelHandle)
     {
         rmt_disable(_rmtChannelHandle);
@@ -224,24 +238,33 @@ void ESP32RMTLedStrip::deinitRMTPeripheral()
         _ledStripEncoderHandle = nullptr;
     }
     _isInit = false;
+    RaftMutex_unlock(_stateMutex);
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Show pixels
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void ESP32RMTLedStrip::showPixels(std::vector<LEDPixel>& pixels)
+bool ESP32RMTLedStrip::showPixels(std::vector<LEDPixel>& pixels)
 {
     // Can't show pixels if not setup
     if (!_isSetup)
-        return;
+        return false;
     
     // Get number of pixels to copy
     if (pixels.size() < _pixelIdxStartOffset)
-        return;
+        return false;
     uint32_t numPixelsToCopy = _ledStripConfig.numPixels;
     if (numPixelsToCopy > pixels.size() - _pixelIdxStartOffset)
         numPixelsToCopy = pixels.size() - _pixelIdxStartOffset;
+
+    // Check if transmission is already in progress
+    // If so, skip this update to prevent buffer corruption
+    if (RaftAtomicBool_get(_txInProgress))
+    {
+        // Skip this update - transmission still in progress
+        return false;
+    }
 
     // Copy the buffer
     uint32_t numBytesToCopy = numPixelsToCopy * sizeof(LEDPixel);
@@ -280,17 +303,17 @@ void ESP32RMTLedStrip::showPixels(std::vector<LEDPixel>& pixels)
             .eot_level = 0      // level = 0 at end
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 2, 0)
             ,
-            .queue_nonblocking = false
+            .queue_nonblocking = true  // fail fast if queue full rather than blocking
 #endif
         }
     };
-    _txInProgress = true;
+    RaftAtomicBool_set(_txInProgress, true);
     _lastTxTimeMs = millis();
     esp_err_t err = rmt_transmit(_rmtChannelHandle, _ledStripEncoderHandle, _pixelBuffer.data(), numBytesToCopy, &tx_config);
     if (err != ESP_OK)
     {
         LOG_E(MODULE_PREFIX, "rmt_transmit failed: %d", err);
-        _txInProgress = false;
+        RaftAtomicBool_set(_txInProgress, false);
         deinitRMTPeripheral();
     }
 
@@ -356,6 +379,8 @@ void ESP32RMTLedStrip::showPixels(std::vector<LEDPixel>& pixels)
             _ledStripConfig.stopAfterTx ? "Y" : "N",
             outStr.c_str());
 #endif
+    
+    return (err == ESP_OK);
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -373,7 +398,7 @@ void ESP32RMTLedStrip::waitUntilShowComplete()
     // Max time to wait
     uint64_t maxWaitUs = (WAIT_RMT_BASE_US + WAIT_RMT_PER_PIX_US * _pixelBuffer.size() + 1000)/1000;
     uint64_t startTimeUs = micros();
-    while (_txInProgress && !Raft::isTimeout(micros(), startTimeUs, maxWaitUs))
+    while (RaftAtomicBool_get(_txInProgress) && !Raft::isTimeout(micros(), startTimeUs, maxWaitUs))
     {
         if (maxWaitUs > 1000)
             delay(1);
@@ -400,9 +425,9 @@ bool ESP32RMTLedStrip::rmtTxCompleteCBStatic(rmt_channel_handle_t tx_chan, const
 
 bool ESP32RMTLedStrip::rmtTxCompleteCB(rmt_channel_handle_t tx_chan, const rmt_tx_done_event_data_t *edata)
 {
-    // No longer transmitting
+    // No longer transmitting (atomic update, no mutex needed in ISR)
+    RaftAtomicBool_set(_txInProgress, false);
     _lastTxTimeMs = millis();
-    _txInProgress = false;
 
     // False indicates a higher-priority task hasn't been woken up
     return false;

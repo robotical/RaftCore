@@ -38,6 +38,8 @@
 // #define DEBUG_INBOUND_BLOCK_MAX
 // #define DEBUG_OUTBOUND_BLOCK_MAX
 // #define DEBUG_COMMS_MAN_ADD_PROTOCOL
+// #define DEBUG_OUTBOUND_CAN_ACCEPT_TIMING
+// #define DEBUG_OUTBOUND_HANDLE_MSG_TIMING
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Constructor
@@ -365,6 +367,14 @@ void CommsChannelManager::inboundHandleMsgVec(uint32_t channelID, const SpiramAw
 
 bool CommsChannelManager::outboundCanAccept(uint32_t channelID, CommsMsgTypeCode msgType, bool &noConn)
 {
+#ifdef DEBUG_OUTBOUND_CAN_ACCEPT_TIMING
+    static uint32_t callCount = 0;
+    static uint32_t totalElapsedUs = 0;
+    static uint32_t maxElapsedUs = 0;
+    static uint32_t lastReportMs = 0;
+    uint64_t startUs = micros();
+#endif
+
     // Check the channel
     if (channelID >= _commsChannelVec.size())
         return false;
@@ -378,7 +388,29 @@ bool CommsChannelManager::outboundCanAccept(uint32_t channelID, CommsMsgTypeCode
     ensureProtocolCodecExists(channelID);
 
     // Check validity
-    return pChannel->outboundCanAccept(channelID, msgType, noConn);
+    bool result = pChannel->outboundCanAccept(channelID, msgType, noConn);
+
+#ifdef DEBUG_OUTBOUND_CAN_ACCEPT_TIMING
+    uint64_t endUs = micros();
+    uint32_t elapsedUs = endUs - startUs;
+    callCount++;
+    totalElapsedUs += elapsedUs;
+    if (elapsedUs > maxElapsedUs)
+        maxElapsedUs = elapsedUs;
+        
+    // Report every 5 seconds
+    if (Raft::isTimeout(millis(), lastReportMs, 5000))
+    {
+        LOG_I(MODULE_PREFIX, "outboundCanAccept stats: calls=%d avgUs=%d maxUs=%d",
+                    callCount, callCount > 0 ? totalElapsedUs/callCount : 0, maxElapsedUs);
+        lastReportMs = millis();
+        callCount = 0;
+        totalElapsedUs = 0;
+        maxElapsedUs = 0;
+    }
+#endif
+
+    return result;
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -513,23 +545,25 @@ CommsCoreRetCode CommsChannelManager::handleOutboundMessageOnChannel(CommsChanne
 
     else
     {
-            // TODO - maybe on callback thread here so make sure this is ok!!!!
-            // TODO - probably have a single-element buffer for each publish type???
-            //      - then service it in the service loop
+        // TODO - maybe on callback thread here so make sure this is ok!!!!
+        // TODO - probably have a single-element buffer for each publish type???
+        //      - then service it in the service loop
 
-            // Ensure protocol handler exists
-            ensureProtocolCodecExists(channelID);
+        // Ensure protocol handler exists
+        ensureProtocolCodecExists(channelID);
 
 #ifdef DEBUG_OUTBOUND_PUBLISH
-            // Debug
-            LOG_I(MODULE_PREFIX, "handleOutboundMessage msg channelID %d, msgType %s msgNum %d, len %d",
-                msg.getChannelID(), msg.getMsgTypeAsString(msg.getMsgTypeCode()), msg.getMsgNumber(), msg.getBufLen());
+        // Debug
+        LOG_I(MODULE_PREFIX, "handleOutboundMessage msg channelID %d, msgType %s msgNum %d, len %d",
+            msg.getChannelID(), msg.getMsgTypeAsString(msg.getMsgTypeCode()), msg.getMsgNumber(), msg.getBufLen());
 #endif
 
-            // Check if channel can accept an outbound message and send if so
-            bool noConn = false;
-            if (pChannel->outboundCanAccept(channelID, msg.getMsgTypeCode(), noConn))
-                pChannel->addTxMsgToProtocolCodec(msg);
+        // Check if channel can accept an outbound message and send if so
+        bool noConn = false;
+        if (pChannel->outboundCanAccept(channelID, msg.getMsgTypeCode(), noConn))
+        {
+            pChannel->addTxMsgToProtocolCodec(msg);
+        }
     }
 
     // Return ok

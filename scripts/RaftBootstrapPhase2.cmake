@@ -69,6 +69,9 @@ add_custom_target(
 # Dependency on SysTypes header
 set(ADDED_PROJECT_DEPENDENCIES ${ADDED_PROJECT_DEPENDENCIES} SysTypeInfoRecs)
 
+# For backwards compatibility set _build_config_name variable to the current _systype_name
+set(_build_config_name ${_systype_name})
+
 ################################################
 # DevTypes Generation
 ################################################
@@ -159,28 +162,32 @@ set(EXTRA_COMPONENT_DIRS ${EXTRA_COMPONENT_DIRS} ${OPTIONAL_COMPONENTS})
 # Partition table
 ################################################
 
-# Copy the partitions.csv file from the specific systypes folder to the build artifacts directory
-# It should not go into the build_config_dir as the sdkconfig.defaults file must reference a fixed folder
-set(_partitions_csv_file "${RAFT_BUILD_ARTIFACTS_FOLDER}/partitions.csv")
+# Copy the partitions.csv file to a fixed location so all sdkconfig.defaults files can reference the same path
+# This avoids the need for systype-specific paths in sdkconfig.defaults
+set(_partitions_csv_file "${CMAKE_SOURCE_DIR}/build/raft/partitions.csv")
+set(_partitions_csv_dir "${CMAKE_SOURCE_DIR}/build/raft")
 
-# Copy the partitions.csv file from the specific systypes folder to the build artifacts directory
+# Ensure the directory exists
+file(MAKE_DIRECTORY ${_partitions_csv_dir})
+
+# Copy the partitions.csv file during configuration
 execute_process(
     COMMAND ${CMAKE_COMMAND} -E copy "${BUILD_CONFIG_DIR}/partitions.csv" ${_partitions_csv_file}
 )
 
-# Custom command to copy the partitions.csv file
+# Custom command to copy the partitions.csv file when it changes
 add_custom_command(
     OUTPUT ${_partitions_csv_file}
     COMMAND ${CMAKE_COMMAND} -E copy "${BUILD_CONFIG_DIR}/partitions.csv" ${_partitions_csv_file}
     DEPENDS "${BUILD_CONFIG_DIR}/partitions.csv"
-    COMMENT "Copying partitions.csv to build artifacts directory"
+    COMMENT "Copying partitions.csv to fixed build location"
 )
 
 # Custom target to ensure the partitions.csv file is generated before the main project is built
 add_custom_target(
     partitions_csv ALL
     DEPENDS ${_partitions_csv_file}
-    COMMENT "Copying partitions.csv to build artifacts directory"
+    COMMENT "Ensuring partitions.csv is in fixed build location"
 )
 
 # Dependency on partitions.csv
@@ -194,6 +201,30 @@ set(ADDED_PROJECT_DEPENDENCIES ${ADDED_PROJECT_DEPENDENCIES} partitions_csv)
 if(DEFINED UI_SOURCE_PATH)
     # Process WebUI files into a temporary folder
     set(_full_web_ui_source_path "${BUILD_CONFIG_DIR}/${UI_SOURCE_PATH}")
+
+    # Validate the WebUI source directory exists
+    if(NOT EXISTS "${_full_web_ui_source_path}")
+        message(FATAL_ERROR
+            "\n==================== WebUI Build Error ====================\n"
+            "UI_SOURCE_PATH is set to '${UI_SOURCE_PATH}' but the resolved\n"
+            "directory does not exist:\n"
+            "  ${_full_web_ui_source_path}\n\n"
+            "Either create this directory with a WebUI project, or comment\n"
+            "out the set(UI_SOURCE_PATH ...) line in your features.cmake.\n"
+            "============================================================\n"
+        )
+    endif()
+    if(NOT EXISTS "${_full_web_ui_source_path}/package.json")
+        message(FATAL_ERROR
+            "\n==================== WebUI Build Error ====================\n"
+            "UI_SOURCE_PATH resolves to:\n"
+            "  ${_full_web_ui_source_path}\n"
+            "but this directory does not contain a package.json file.\n"
+            "Expected a WebUI project (with npm/package.json) at this path.\n"
+            "============================================================\n"
+        )
+    endif()
+
     set(_web_ui_build_folder_path "${RAFT_BUILD_ARTIFACTS_FOLDER}/BuildWebUI")
     # Ensure the WebUI build folder exists and is clean
     file(MAKE_DIRECTORY ${_web_ui_build_folder_path})
